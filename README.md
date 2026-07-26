@@ -4,9 +4,9 @@
 [![codecov](https://codecov.io/gh/JimGalasyn/proc-warden/branch/main/graph/badge.svg)](https://codecov.io/gh/JimGalasyn/proc-warden)
 [![CodeQL](https://github.com/JimGalasyn/proc-warden/actions/workflows/codeql.yml/badge.svg)](https://github.com/JimGalasyn/proc-warden/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/JimGalasyn/proc-warden?include_prereleases)](https://github.com/JimGalasyn/proc-warden/releases)
-[![PyPI](https://img.shields.io/pypi/v/proc-warden)](https://pypi.org/project/proc-warden/)
+[![PyPI](https://img.shields.io/pypi/v/systemd-proc)](https://pypi.org/project/systemd-proc/)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21611649.svg)](https://doi.org/10.5281/zenodo.21611649)
-[![Python](https://img.shields.io/pypi/pyversions/proc-warden)](https://pypi.org/project/proc-warden/)
+[![Python](https://img.shields.io/pypi/pyversions/systemd-proc)](https://pypi.org/project/systemd-proc/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Status: alpha (0.1.x).** The exit-code contract and state names are stable;
@@ -38,8 +38,14 @@ where it outlives the process.
 ## Install
 
 ```bash
-pip install proc-warden
+pip install systemd-proc
 ```
+
+> The PyPI distribution is **`systemd-proc`**, not `proc-warden`: PyPI already has
+> an unrelated `procwarden` (a Python library for supervising subprocesses inside
+> one program), and it compares names with separators stripped, so `proc-warden`
+> collides with it. The repo, the import package `proc_warden`, and the commands
+> are unaffected.
 
 That installs two console scripts, `proc` and `proc-warden`, which are the same
 program. Every example here and in `skills/proc-lifecycle/SKILL.md` says `proc`;
