@@ -156,6 +156,15 @@ def test_queued_lease_acquires_after_holder_exits(home, name):
     assert r.returncode == EX_OK
 
 
+def test_gpu_wait_without_gpu_is_refused_not_ignored(home, name):
+    """Regression: `--gpu-wait 60` alone used to launch with no lease at all, so
+    a typo produced an unserialized GPU run that looked fine."""
+    r = proc("run", name, "--gpu-wait", "60", "--", "/bin/true", home=home)
+    assert r.returncode == EX_USAGE
+    assert "--gpu" in r.stderr
+    assert not (home / "runs" / name).exists(), "a refused launch must leave no run dir"
+
+
 def test_nested_lease_is_refused_rather_than_deadlocking(home, name):
     """A --gpu run whose command calls proc run --gpu on the same device would
     block on a second fd forever. Refuse, loudly."""
@@ -199,6 +208,33 @@ def test_wait_on_unknown_run_is_usage_error(home):
     assert proc("wait", "nope", home=home).returncode == EX_USAGE
 
 
+def test_ready_marker_split_across_writes_is_still_matched(home, name):
+    """Regression: the incremental scanner used to consume the partial trailing
+    line, so a marker arriving in two write()s was never matched and a ready
+    process reported TIMEOUT. PYTHONUNBUFFERED makes `print("bodies:", n)` one
+    write per argument, so this is the common case, not a contrived one."""
+    proc("run", name, "--", sys.executable, "-c",
+         "import sys,time\n"
+         "sys.stdout.write('SERVER'); sys.stdout.flush()\n"
+         "time.sleep(1.5)\n"
+         "sys.stdout.write(' READY\\n'); sys.stdout.flush()\n"
+         "time.sleep(30)\n", home=home)
+    r = proc("wait", name, "--ready", "SERVER READY", "--timeout", "20", home=home)
+    assert r.returncode == EX_OK, \
+        f"marker was printed but not matched; log={(home / 'runs' / name / 'stdout').read_text()!r}"
+
+
+def test_ready_marker_without_trailing_newline_is_matched(home, name):
+    """The partial line must still be searched, or a marker printed without a
+    newline would only match once something else flushed after it."""
+    proc("run", name, "--", sys.executable, "-c",
+         "import sys,time\n"
+         "sys.stdout.write('READY-NO-NEWLINE'); sys.stdout.flush()\n"
+         "time.sleep(30)\n", home=home)
+    assert proc("wait", name, "--ready", "READY-NO-NEWLINE", "--timeout", "20",
+                home=home).returncode == EX_OK
+
+
 # --- invariant 5: status outlives the process, and unknown is not "fine" -----
 
 def test_exit_code_is_readable_after_death(home, name):
@@ -224,6 +260,22 @@ def test_vanished_unit_reads_as_lost_not_running(home, name):
     assert wait_until(lambda: state_of(name, home)["state"] != "RUNNING")
     (home / "runs" / name / "status").unlink(missing_ok=True)  # simulate the lost record
     assert state_of(name, home)["state"] == "LOST"
+
+
+def test_run_reports_an_immediate_death_in_its_exit_code(home, name):
+    """Regression: `proc run` returned 0 for a process that was already FAILED by
+    the time it looked, so `proc run ... || handle` caught a busy lease but
+    silently missed a crash."""
+    r = proc("run", name, "--", "/bin/false", home=home)
+    assert r.returncode == EX_FAILED
+    assert state_of(name, home)["state"] == "FAILED"
+
+
+def test_run_of_a_fast_clean_exit_is_still_success(home, name):
+    """The converse: exiting 0 before we look is not a failure."""
+    r = proc("run", name, "--", "/bin/true", home=home)
+    assert r.returncode == EX_OK
+    assert wait_until(lambda: state_of(name, home)["state"] == "EXITED")
 
 
 def test_status_of_unknown_run_is_usage_error(home):

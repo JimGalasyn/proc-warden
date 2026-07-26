@@ -76,6 +76,11 @@ Everything after `--` is the command, verbatim.
 `wait` never kills anything. A timeout is a statement about *your* patience, not
 about the process.
 
+`run` reports what it can see by the time it returns: if the process is already
+`FAILED`, `KILLED`, `OOM`, or `LOST` when it looks, that is exit 1. It looks only
+once, so a process that dies a second later still exits 0 — detecting *that* is
+what `wait` is for.
+
 ## States
 
 `RUNNING`, `EXITED` (0), `FAILED` (nonzero), `KILLED` (signal), `OOM`,

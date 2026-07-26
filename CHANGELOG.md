@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Three fixes found by review, each with a regression test that fails against 0.1.0.
+
+- **`wait --ready` could miss a marker that was printed.** The incremental
+  scanner consumed the partial trailing line, so a regex spanning two reads never
+  matched and a ready process was reported as `TIMEOUT` — the false negative that
+  invariant 4 exists to prevent. Since `PYTHONUNBUFFERED=1` makes
+  `print("bodies:", n)` one `write()` per argument, splitting mid-marker was the
+  common case rather than a corner one. The incomplete line is now carried
+  forward between polls.
+- **`proc run` now exits 1 when the process is already dead when it looks.** It
+  returned 0 while printing `-> FAILED`, so `proc run ... || handle` caught a busy
+  lease but silently missed a crash. A clean fast exit is still 0; a process that
+  dies later is still `wait`'s job to report.
+- **`--gpu-wait` without `--gpu` is now a usage error.** It was silently ignored,
+  so the typo launched an unserialized GPU run that looked fine.
+
 ## 0.1.0 — 2026-07-26
 
 First version. `proc`: a stdlib-only Python CLI over `systemd-run --user` giving
