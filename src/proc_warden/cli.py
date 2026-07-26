@@ -1,0 +1,759 @@
+#!/usr/bin/env python3
+"""proc -- process lifetime you can reason about.
+
+A thin, dependency-free wrapper over `systemd-run --user`. Every managed process
+gets a NAME (never a command-line pattern), a cgroup (so "kill" means kill), a
+recorded exit status that outlives it, and optionally an exclusive GPU lease.
+
+The value here is the protocol, not the machinery -- systemd already is the
+supervisor. See docs/DESIGN.md for the six invariants and why each exists.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# --- exit codes (stable; scripts and skills depend on these) ------------------
+EX_OK = 0       # asked-for condition holds
+EX_FAILED = 1   # the managed process died, or died before becoming ready
+EX_TIMEOUT = 2  # we stopped waiting; the process is untouched and still running
+EX_USAGE = 3    # bad arguments, or no such run
+EX_BUSY = 4     # name already running, or the GPU lease is held elsewhere
+EX_ENV = 5      # this machine can't support the operation
+
+STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+PROC_HOME = Path(os.environ.get("PROC_HOME") or STATE_HOME / "proc")
+RUNS = PROC_HOME / "runs"
+LEASES = PROC_HOME / "leases"
+
+UNIT_PREFIX = "proc-"
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+FLOCK = "/usr/bin/flock"
+LEASE_BUSY_CODE = 75  # flock --conflict-exit-code: distinguishes "busy" from "cmd failed"
+POLL = 0.25
+DEFAULT_WAIT_TIMEOUT = 900
+DEFAULT_STOP_TIMEOUT = 30
+GPU_LEAK_SLACK_MIB = 64  # below this, treat a baseline diff as noise
+
+# Environment the unit inherits from the calling shell. systemd's user manager
+# has its own environment, so a venv-activated shell would otherwise be lost --
+# the single most surprising failure mode of naive systemd-run use.
+ENV_PASSTHROUGH = (
+    "PATH", "HOME", "LANG", "TMPDIR", "VIRTUAL_ENV", "PYTHONPATH",
+    "PYTHONUNBUFFERED", "LD_LIBRARY_PATH", "SDL_VIDEODRIVER", "DISPLAY",
+    "WAYLAND_DISPLAY", "MPLBACKEND",
+)
+ENV_PASSTHROUGH_PREFIXES = ("CUDA_", "NVIDIA_", "XLA_", "JAX_", "LC_", "NCCL_")
+
+RUNNING_STATES = ("active", "activating", "reloading", "deactivating")
+
+
+def say(msg: str, *, err: bool = False) -> None:
+    print(f"proc: {msg}", file=sys.stderr if err else sys.stdout)
+
+
+def die(msg: str, code: int) -> None:
+    say(msg, err=True)
+    sys.exit(code)
+
+
+def sh(argv: list[str], *, timeout: float = 30) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+
+# --- environment / naming ----------------------------------------------------
+
+def require_env() -> None:
+    if " " in str(PROC_HOME):
+        die(f"PROC_HOME contains a space, which breaks unit redirection: {PROC_HOME}", EX_ENV)
+    if not shutil.which("systemd-run"):
+        die("systemd-run not found; proc requires a systemd user manager", EX_ENV)
+    r = sh(["systemctl", "--user", "is-system-running"])
+    state = (r.stdout or r.stderr).strip()
+    if state in ("offline", "unknown", ""):
+        die(f"no systemd user manager (is-system-running: {state or 'no answer'})", EX_ENV)
+    if not Path(FLOCK).exists():
+        die(f"{FLOCK} not found; needed for exclusive leases", EX_ENV)
+    RUNS.mkdir(parents=True, exist_ok=True)
+    LEASES.mkdir(parents=True, exist_ok=True)
+
+
+def check_name(name: str) -> str:
+    if not NAME_RE.match(name):
+        die(f"bad run name {name!r}: use letters, digits, '_', '.', '-' (max 64)", EX_USAGE)
+    return name
+
+
+def unit_of(name: str) -> str:
+    return f"{UNIT_PREFIX}{name}.service"
+
+
+def run_dir(name: str) -> Path:
+    return RUNS / name
+
+
+# --- state: read from disk first, systemd second ------------------------------
+
+def unit_props(name: str) -> dict[str, str]:
+    r = sh(["systemctl", "--user", "show", unit_of(name),
+            "-p", "ActiveState", "-p", "SubState", "-p", "MainPID", "-p", "LoadState"])
+    props: dict[str, str] = {}
+    for line in r.stdout.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            props[k] = v
+    return props
+
+
+def parse_status_file(path: Path) -> dict[str, str]:
+    """Read the key=value line ExecStopPost wrote when the process died."""
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for tok in text.split():
+        if "=" in tok:
+            k, _, v = tok.partition("=")
+            out[k] = v
+    return out
+
+
+def read_state(name: str) -> dict | None:
+    """Everything known about a run. Disk is authoritative for the dead."""
+    d = run_dir(name)
+    if not d.is_dir():
+        return None
+    meta: dict = {}
+    try:
+        meta = json.loads((d / "meta.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    st: dict = {
+        "name": name, "dir": str(d), "unit": unit_of(name),
+        "cmd": meta.get("cmd", []), "cwd": meta.get("cwd"),
+        "gpu": meta.get("gpu"), "gpu_baseline_mib": meta.get("gpu_baseline_mib"),
+        "started_at": meta.get("started_at"), "exit": None, "signal": None,
+        "pid": None, "finished_at": None, "result": None,
+    }
+
+    status_path = d / "status"
+    status = parse_status_file(status_path)
+
+    if status:
+        st["finished_at"] = status_path.stat().st_mtime
+        st["result"] = status.get("result")
+        code, value = status.get("code"), status.get("status", "")
+        if code == "exited":
+            st["exit"] = int(value) if value.lstrip("-").isdigit() else None
+            if status.get("result") == "oom-kill":
+                st["state"] = "OOM"
+            elif st["exit"] == 0:
+                st["state"] = "EXITED"
+            elif st["exit"] == LEASE_BUSY_CODE and st["gpu"] is not None:
+                st["state"] = "LEASE_BUSY"
+            else:
+                st["state"] = "FAILED"
+        elif code in ("killed", "dumped"):
+            st["signal"] = value
+            st["state"] = "OOM" if status.get("result") == "oom-kill" else "KILLED"
+        else:
+            st["state"] = "FAILED"
+        return st
+
+    props = unit_props(name)
+    if props.get("ActiveState") in RUNNING_STATES:
+        st["state"] = "RUNNING"
+        pid = props.get("MainPID", "0")
+        st["pid"] = int(pid) if pid.isdigit() and pid != "0" else None
+    else:
+        # No status file and no live unit: the unit vanished without running
+        # ExecStopPost -- e.g. `wsl --shutdown` took the user manager with it.
+        st["state"] = "LOST"
+    return st
+
+
+def all_runs() -> list[dict]:
+    if not RUNS.is_dir():
+        return []
+    out = []
+    for d in sorted(RUNS.iterdir()):
+        if d.is_dir():
+            st = read_state(d.name)
+            if st:
+                out.append(st)
+    return out
+
+
+# --- GPU ---------------------------------------------------------------------
+
+def gpu_memory() -> list[dict] | None:
+    """Device-level memory only. Per-process attribution (--query-compute-apps)
+    returns an empty list under WSL2, so we never rely on it."""
+    if not shutil.which("nvidia-smi"):
+        return None
+    r = sh(["nvidia-smi", "--query-gpu=index,memory.used,memory.total",
+            "--format=csv,noheader,nounits"])
+    if r.returncode != 0:
+        return None
+    devs = []
+    for line in r.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) == 3 and parts[0].isdigit():
+            devs.append({"index": int(parts[0]), "used_mib": int(parts[1]),
+                         "total_mib": int(parts[2])})
+    return devs or None
+
+
+def gpu_used_mib(dev: int) -> int | None:
+    for d in gpu_memory() or []:
+        if d["index"] == dev:
+            return d["used_mib"]
+    return None
+
+
+def lease_path(dev: int) -> Path:
+    return LEASES / f"gpu{dev}.lock"
+
+
+def lease_held(dev: int) -> bool:
+    """Ask the kernel, not the process table: try to take the lock and see."""
+    p = lease_path(dev)
+    p.touch(exist_ok=True)
+    r = sh([FLOCK, "--nonblock", f"--conflict-exit-code={LEASE_BUSY_CODE}", str(p), "true"])
+    return r.returncode == LEASE_BUSY_CODE
+
+
+def lease_holder(dev: int) -> str | None:
+    for st in all_runs():
+        if st["state"] == "RUNNING" and st.get("gpu") == dev:
+            return st["name"]
+    return None
+
+
+# --- run ---------------------------------------------------------------------
+
+def build_env(extra: list[str]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if k in ENV_PASSTHROUGH or k.startswith(ENV_PASSTHROUGH_PREFIXES):
+            env[k] = v
+    for item in extra:
+        if "=" not in item:
+            die(f"--env needs K=V, got {item!r}", EX_USAGE)
+        k, _, v = item.partition("=")
+        env[k] = v
+    return env
+
+
+def resolve_exe(prog: str, cwd: str) -> str | None:
+    """Resolve argv[0] the way the caller means it: a bare name goes through the
+    caller's PATH (so an activated venv's `python` is honored), while a path is
+    relative to the run's working directory (so `--cwd repo -- .venv/bin/python`
+    works, which is how these repos are actually invoked)."""
+    if os.sep in prog:
+        cand = prog if os.path.isabs(prog) else os.path.normpath(os.path.join(cwd, prog))
+        return cand if os.access(cand, os.X_OK) else None
+    return shutil.which(prog)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    require_env()
+    name = check_name(args.name)
+    if not args.cmd:
+        die("nothing to run: put the command after `--`", EX_USAGE)
+
+    if args.gpu_wait is not None and args.gpu is None:
+        die("--gpu-wait only means something with --gpu: there is no lease to queue "
+            "for. Add --gpu DEV (or --gpu for device 0).", EX_USAGE)
+
+    existing = read_state(name)
+    if existing and existing["state"] == "RUNNING":
+        if not args.replace:
+            die(f"{name} is already RUNNING (pid {existing['pid']}). "
+                f"Use a different name, or --replace to stop it first.", EX_BUSY)
+        say(f"--replace: stopping the running {name} first")
+        stop_run(name, DEFAULT_STOP_TIMEOUT)
+
+    # A nested --gpu on a device this process already leases would block on a
+    # second fd forever. Refuse instead of deadlocking.
+    if args.gpu is not None:
+        held = os.environ.get("PROC_GPU_LEASE")
+        if held is not None and held.isdigit() and int(held) == args.gpu:
+            die(f"this process already holds the gpu{args.gpu} lease (PROC_GPU_LEASE={held}); "
+                f"a nested --gpu would deadlock. Drop --gpu, or lease a different device.",
+                EX_BUSY)
+
+    d = run_dir(name)
+    if d.exists():
+        prev = existing.get("state") if existing else "?"
+        say(f"replacing previous {prev} run of {name} (logs in {d} are discarded)")
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+
+    cwd = os.path.abspath(args.cwd or os.getcwd())
+    if not os.path.isdir(cwd):
+        shutil.rmtree(d)
+        die(f"no such working directory: {cwd}", EX_USAGE)
+
+    argv = list(args.cmd)
+    resolved = resolve_exe(argv[0], cwd)
+    if resolved is None:
+        shutil.rmtree(d)
+        die(f"command not found: {argv[0]} (bare names use the caller's PATH; "
+            f"a path is relative to {cwd})", EX_USAGE)
+    argv[0] = resolved  # so `python` means this shell's venv python, not systemd's
+
+    env = build_env(args.env)
+    env["PROC_NAME"] = name
+    env["PROC_RUN_DIR"] = str(d)
+    # stdout is a file here, so Python would block-buffer it in 4 KiB chunks --
+    # a readiness marker printed at startup might not land for minutes, or ever.
+    # Overridable: --env PYTHONUNBUFFERED= restores the default buffering.
+    env.setdefault("PYTHONUNBUFFERED", "1")
+
+    exec_argv = argv
+    if args.gpu is not None:
+        lock = lease_path(args.gpu)
+        lock.touch(exist_ok=True)
+        wait_opt = (["--timeout", str(args.gpu_wait)] if args.gpu_wait
+                    else ["--nonblock"])
+        exec_argv = ([FLOCK, *wait_opt, f"--conflict-exit-code={LEASE_BUSY_CODE}",
+                      str(lock)] + argv)
+        env.setdefault("CUDA_VISIBLE_DEVICES", str(args.gpu))
+        # JAX grabs ~75% of VRAM on first use by default; that turns one run
+        # into a hard blocker for every other GPU consumer on the box.
+        env.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+        env["PROC_GPU_LEASE"] = str(args.gpu)
+
+    stdout_path = d / "stdout"
+    status_path = d / "status"
+    stop_post = (
+        "/bin/sh -c 'printf \"code=%s status=%s result=%s\\n\" "
+        f'"$EXIT_CODE" "$EXIT_STATUS" "$SERVICE_RESULT" > {status_path}\''
+    )
+
+    meta = {
+        "name": name, "cmd": args.cmd, "resolved": argv[0], "cwd": cwd,
+        "unit": unit_of(name), "gpu": args.gpu,
+        "gpu_baseline_mib": gpu_used_mib(args.gpu) if args.gpu is not None else None,
+        "env": env, "started_at": time.time(),
+    }
+    (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+    # Clear any leftover failed unit of the same name so the name is reusable.
+    sh(["systemctl", "--user", "reset-failed", unit_of(name)])
+
+    launch = [
+        "systemd-run", "--user", "--collect",
+        f"--unit={unit_of(name)}",
+        f"--description=proc run {name}",
+        "--property=Type=exec",
+        f"--property=WorkingDirectory={meta['cwd']}",
+        f"--property=StandardOutput=append:{stdout_path}",
+        f"--property=StandardError=append:{stdout_path}",
+        f"--property=TimeoutStopSec={args.stop_timeout}",
+        f"--property=ExecStopPost={stop_post}",
+    ]
+    for k, v in env.items():
+        launch.append(f"--setenv={k}={v}")
+    launch += ["--"] + exec_argv
+
+    r = sh(launch, timeout=60)
+    if r.returncode != 0:
+        say(f"systemd-run failed: {(r.stderr or r.stdout).strip()}", err=True)
+        return EX_FAILED
+
+    # Catch an immediate death -- above all a busy GPU lease -- so contention
+    # reads as contention rather than as a mysteriously finished run. Only a
+    # lease attempt is worth waiting on; otherwise one quick look, so that a
+    # launch stays a launch and not a 2-second stall.
+    for _ in range(8 if args.gpu is not None else 1):
+        time.sleep(0.25)
+        st = read_state(name)
+        if st and st["state"] != "RUNNING":
+            if st["state"] == "LEASE_BUSY":
+                holder = lease_holder(args.gpu) or "an unmanaged process"
+                say(f"gpu{args.gpu} lease is held by {holder}; {name} did not start. "
+                    f"Retry with --gpu-wait SECS to queue for it.", err=True)
+                return EX_BUSY
+            break
+
+    st = read_state(name) or {}
+    state = st.get("state", "?")
+    say(f"{name} -> {state}" + (f" (pid {st['pid']})" if st.get("pid") else ""))
+    say(f"logs: proc logs {name} -f    wait: proc wait {name}    stop: proc stop {name}")
+    # If it is already dead when we look, say so in the exit code -- otherwise
+    # `proc run ... || handle` catches a busy lease but silently misses a crash.
+    # Inherently a race (we look once); a process that dies later is `wait`'s job.
+    if state in ("FAILED", "KILLED", "OOM", "LOST"):
+        return EX_FAILED
+    return EX_OK
+
+
+# --- status / ls -------------------------------------------------------------
+
+def fmt_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    s = int(max(0, seconds))
+    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+
+
+def state_line(st: dict) -> str:
+    end = st.get("finished_at") or time.time()
+    dur = (end - st["started_at"]) if st.get("started_at") else None
+    if st["state"] == "KILLED" or st["state"] == "OOM":
+        exit_s = f"sig:{st['signal']}" if st.get("signal") else "killed"
+    elif st.get("exit") is not None:
+        exit_s = str(st["exit"])
+    else:
+        exit_s = "-"
+    cmd = " ".join(st.get("cmd") or []) or "-"
+    gpu = str(st["gpu"]) if st.get("gpu") is not None else "-"
+    pid = str(st["pid"]) if st.get("pid") else "-"
+    return (f"{st['name'][:24]:<24} {st['state']:<10} {exit_s:<9} {pid:<8} "
+            f"{fmt_duration(dur):<9} {gpu:<4} {cmd[:60]}")
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    require_env()
+    if args.name:
+        st = read_state(check_name(args.name))
+        if st is None:
+            die(f"no such run: {args.name}", EX_USAGE)
+        if args.json:
+            print(json.dumps(st, indent=2))
+        else:
+            print(HEADER)
+            print(state_line(st))
+        return EX_OK
+
+    runs = all_runs()
+    if args.json:
+        print(json.dumps(runs, indent=2))
+        return EX_OK
+    if not runs:
+        say("no runs recorded")
+        return EX_OK
+    print(HEADER)
+    for st in runs:
+        print(state_line(st))
+    return EX_OK
+
+
+HEADER = (f"{'NAME':<24} {'STATE':<10} {'EXIT':<9} {'PID':<8} "
+          f"{'ELAPSED':<9} {'GPU':<4} CMD")
+
+
+# --- wait --------------------------------------------------------------------
+
+def cmd_wait(args: argparse.Namespace) -> int:
+    require_env()
+    name = check_name(args.name)
+    if read_state(name) is None:
+        die(f"no such run: {name}", EX_USAGE)
+
+    ready_re = re.compile(args.ready) if args.ready else None
+    stdout_path = run_dir(name) / "stdout"
+    deadline = (time.monotonic() + args.timeout) if args.timeout else None
+    pos = 0
+    tail = ""  # bytes read past the last newline; a marker may span two reads
+
+    def scan() -> str | None:
+        nonlocal pos, tail
+        try:
+            with stdout_path.open("r", errors="replace") as fh:
+                fh.seek(pos)
+                chunk = fh.read()
+                pos = fh.tell()
+        except OSError:
+            return None
+        if not chunk or ready_re is None:
+            return None
+        # Carry the incomplete last line forward instead of consuming it.
+        # PYTHONUNBUFFERED makes `print("bodies:", n)` one write() per argument,
+        # so a poll landing mid-line would otherwise split the marker across two
+        # reads and never match it -- a ready process reported as TIMEOUT.
+        lines = (tail + chunk).split("\n")
+        tail = lines.pop()
+        for line in lines:
+            if ready_re.search(line):
+                return line
+        # Match the partial line too, so a marker not yet newline-terminated
+        # still counts (this is what the old chunk.splitlines() gave us).
+        return tail if ready_re.search(tail) else None
+
+    while True:
+        hit = scan()
+        if hit is not None:
+            say(f"{name} -> READY ({hit.strip()[:80]})")
+            return EX_OK
+
+        st = read_state(name) or {}
+        if st.get("state") != "RUNNING":
+            hit = scan()  # the marker may have landed in the same breath as exit
+            if hit is not None:
+                say(f"{name} -> READY ({hit.strip()[:80]})")
+                return EX_OK
+            state = st.get("state", "?")
+            detail = f"exit {st['exit']}" if st.get("exit") is not None else (
+                f"signal {st['signal']}" if st.get("signal") else "no status recorded")
+            if ready_re is not None:
+                say(f"{name} -> {state} before matching /{args.ready}/ ({detail})", err=True)
+                return EX_FAILED
+            say(f"{name} -> {state} ({detail})")
+            return EX_OK if state == "EXITED" else EX_FAILED
+
+        if deadline and time.monotonic() > deadline:
+            say(f"{name} -> TIMEOUT after {args.timeout}s; still RUNNING and untouched", err=True)
+            return EX_TIMEOUT
+        time.sleep(POLL)
+
+
+# --- logs --------------------------------------------------------------------
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    require_env()
+    name = check_name(args.name)
+    st = read_state(name)
+    if st is None:
+        die(f"no such run: {name}", EX_USAGE)
+    path = run_dir(name) / "stdout"
+    if not path.exists():
+        say("no output yet")
+        return EX_OK
+
+    if not args.follow:
+        text = path.read_text(errors="replace")
+        lines = text.splitlines()
+        if args.tail:
+            lines = lines[-args.tail:]
+        for line in lines:
+            print(line)
+        return EX_OK
+
+    # Follow, but always terminate: when the process is gone and the file is
+    # drained, stop. `tail -f` would hang here forever.
+    with path.open("r", errors="replace") as fh:
+        if args.tail:
+            fh.seek(0)
+            for line in fh.read().splitlines()[-args.tail:]:
+                print(line)
+        else:
+            for line in fh:
+                print(line, end="" if line.endswith("\n") else "\n")
+        while True:
+            chunk = fh.read()
+            if chunk:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+                continue
+            st = read_state(name) or {}
+            if st.get("state") != "RUNNING":
+                if not fh.read():
+                    say(f"--- {name} is {st.get('state', '?')}; end of log")
+                    return EX_OK if st.get("state") == "EXITED" else EX_FAILED
+            time.sleep(POLL)
+
+
+# --- stop --------------------------------------------------------------------
+
+def stop_run(name: str, timeout: int) -> str:
+    sh(["systemctl", "--user", "stop", unit_of(name)], timeout=timeout + 15)
+    for _ in range(int(timeout / POLL) + 1):
+        st = read_state(name) or {}
+        if st.get("state") != "RUNNING":
+            return st.get("state", "?")
+        time.sleep(POLL)
+    return "RUNNING"
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    require_env()
+    name = check_name(args.name)
+    st = read_state(name)
+    if st is None:
+        die(f"no such run: {name}", EX_USAGE)
+    if st["state"] != "RUNNING":
+        say(f"{name} is already {st['state']}; nothing to stop")
+        return EX_OK
+    state = stop_run(name, args.timeout)
+    if state == "RUNNING":
+        say(f"{name} still RUNNING after {args.timeout}s", err=True)
+        return EX_FAILED
+    say(f"{name} -> {state} (whole cgroup)")
+    return EX_OK
+
+
+# --- gpu ---------------------------------------------------------------------
+
+def cmd_gpu(args: argparse.Namespace) -> int:
+    require_env()
+    devs = gpu_memory()
+    if devs is None:
+        say("no nvidia-smi / no GPU visible", err=True)
+        return EX_ENV
+    for d in devs:
+        held = lease_held(d["index"])
+        holder = lease_holder(d["index"]) if held else None
+        lease = "free" if not held else f"held by {holder or 'an unmanaged process'}"
+        print(f"gpu{d['index']}  {d['used_mib']}/{d['total_mib']} MiB used  lease: {lease}")
+    for st in all_runs():
+        if st["state"] == "RUNNING" and st.get("gpu") is not None:
+            print(f"  running: {st['name']} on gpu{st['gpu']} (pid {st['pid']})")
+    print("note: per-process GPU attribution is unavailable under WSL2, so the "
+          "numbers above are device-wide.")
+    return EX_OK
+
+
+# --- gc ----------------------------------------------------------------------
+
+def cmd_gc(args: argparse.Namespace) -> int:
+    require_env()
+    runs = all_runs()
+    finished = [s for s in runs if s["state"] != "RUNNING"]
+    live = [s for s in runs if s["state"] == "RUNNING"]
+
+    for st in finished:
+        sh(["systemctl", "--user", "reset-failed", unit_of(st["name"])])
+
+    # GPU leak check: only meaningful when nothing holds the lease.
+    for dev in {s["gpu"] for s in runs if s.get("gpu") is not None}:
+        if any(s["state"] == "RUNNING" and s.get("gpu") == dev for s in live):
+            continue
+        if lease_held(dev):
+            say(f"gpu{dev}: lease still held although no managed run is live -- "
+                f"an unmanaged process has it")
+            continue
+        now = gpu_used_mib(dev)
+        baselines = [s["gpu_baseline_mib"] for s in finished
+                     if s.get("gpu") == dev and s.get("gpu_baseline_mib") is not None]
+        if now is None or not baselines:
+            continue
+        base = min(baselines)
+        if now > base + GPU_LEAK_SLACK_MIB:
+            say(f"gpu{dev}: {now} MiB in use but no run is live (baseline was {base} MiB) "
+                f"-- {now - base} MiB may be leaked")
+        else:
+            say(f"gpu{dev}: {now} MiB in use, consistent with baseline {base} MiB")
+
+    if args.purge:
+        n = 0
+        for st in finished:
+            shutil.rmtree(run_dir(st["name"]), ignore_errors=True)
+            n += 1
+        say(f"purged {n} finished run dir(s); {len(live)} still running")
+    else:
+        say(f"{len(finished)} finished, {len(live)} running "
+            f"(use --purge to delete finished run dirs and their logs)")
+    return EX_OK
+
+
+# --- cli ---------------------------------------------------------------------
+
+class Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a bad command line, which would collide with
+    EX_TIMEOUT and make a typo indistinguishable from a timed-out wait."""
+
+    def error(self, message: str):  # type: ignore[override]
+        self.print_usage(sys.stderr)
+        die(message, EX_USAGE)
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = Parser(
+        # However it was invoked: `proc`, `proc-warden`, or the repo shim. A
+        # hardcoded "proc" would make `proc-warden --help` print the wrong name.
+        prog=os.path.basename(sys.argv[0]) or "proc",
+        description="Process lifetime you can reason about.",
+        epilog="exit codes: 0 ok, 1 process failed, 2 timeout, 3 usage, 4 busy, 5 environment")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    r = sub.add_parser("run", help="launch a named process")
+    r.add_argument("name")
+    r.add_argument("--gpu", type=int, nargs="?", const=0, metavar="DEV",
+                   help="take an exclusive lease on GPU DEV (default 0)")
+    r.add_argument("--gpu-wait", type=int, metavar="SECS",
+                   help="queue up to SECS for the lease instead of failing fast")
+    r.add_argument("--cwd", help="working directory (default: current)")
+    r.add_argument("--env", action="append", default=[], metavar="K=V")
+    r.add_argument("--replace", action="store_true", help="stop an existing run of this name")
+    r.add_argument("--stop-timeout", type=int, default=DEFAULT_STOP_TIMEOUT,
+                   metavar="SECS", help="grace period between SIGTERM and SIGKILL")
+    r.add_argument("cmd", nargs="*", help="the command; put it after `--`")
+    r.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("status", help="state of one run or all")
+    s.add_argument("name", nargs="?")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_status)
+
+    ls = sub.add_parser("ls", help="alias for status")
+    ls.add_argument("--json", action="store_true")
+    ls.set_defaults(func=cmd_status, name=None)
+
+    w = sub.add_parser("wait", help="block until ready, dead, or timeout")
+    w.add_argument("name")
+    w.add_argument("--ready", metavar="REGEX", help="succeed when a log line matches")
+    w.add_argument("--timeout", type=int, default=DEFAULT_WAIT_TIMEOUT,
+                   metavar="SECS", help="0 for no limit (default 900)")
+    w.set_defaults(func=cmd_wait)
+
+    lg = sub.add_parser("logs", help="show output")
+    lg.add_argument("name")
+    lg.add_argument("-f", "--follow", action="store_true",
+                    help="follow, and stop when the process is gone")
+    lg.add_argument("-n", "--tail", type=int, metavar="N")
+    lg.set_defaults(func=cmd_logs)
+
+    st = sub.add_parser("stop", help="SIGTERM then SIGKILL the whole cgroup")
+    st.add_argument("name")
+    st.add_argument("--timeout", type=int, default=DEFAULT_STOP_TIMEOUT, metavar="SECS")
+    st.set_defaults(func=cmd_stop)
+
+    g = sub.add_parser("gpu", help="device memory and lease holders")
+    g.set_defaults(func=cmd_gpu)
+
+    gc = sub.add_parser("gc", help="reap finished units, report GPU leaks")
+    gc.add_argument("--purge", action="store_true", help="also delete finished run dirs")
+    gc.set_defaults(func=cmd_gc)
+
+    # Split on the first standalone `--` ourselves: argparse.REMAINDER would
+    # happily swallow our own options into the command.
+    raw = list(sys.argv[1:] if argv is None else argv)
+    after: list[str] | None = None
+    if "--" in raw:
+        i = raw.index("--")
+        raw, after = raw[:i], raw[i + 1:]
+
+    args = p.parse_args(raw)
+    if after is not None:
+        args.cmd = after
+    return args.func(args)
+
+
+def run() -> None:
+    """Console-script entry point: `main`, plus the interrupt contract.
+
+    Ctrl-C exits EX_TIMEOUT, not EX_FAILED: interrupting `proc` says nothing
+    about the managed process, which is still running and untouched.
+    """
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        say("interrupted; managed processes are untouched", err=True)
+        sys.exit(EX_TIMEOUT)
+
+
+if __name__ == "__main__":
+    run()

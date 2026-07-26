@@ -2,3 +2,14 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# packaging
+build/
+dist/
+*.egg-info/
+
+# coverage (parallel mode writes .coverage.<host>.<pid>.<random> per subprocess)
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
