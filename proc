@@ -272,6 +272,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not args.cmd:
         die("nothing to run: put the command after `--`", EX_USAGE)
 
+    if args.gpu_wait is not None and args.gpu is None:
+        die("--gpu-wait only means something with --gpu: there is no lease to queue "
+            "for. Add --gpu DEV (or --gpu for device 0).", EX_USAGE)
+
     existing = read_state(name)
     if existing and existing["state"] == "RUNNING":
         if not args.replace:
@@ -385,8 +389,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             break
 
     st = read_state(name) or {}
-    say(f"{name} -> {st.get('state', '?')}" + (f" (pid {st['pid']})" if st.get("pid") else ""))
+    state = st.get("state", "?")
+    say(f"{name} -> {state}" + (f" (pid {st['pid']})" if st.get("pid") else ""))
     say(f"logs: proc logs {name} -f    wait: proc wait {name}    stop: proc stop {name}")
+    # If it is already dead when we look, say so in the exit code -- otherwise
+    # `proc run ... || handle` catches a busy lease but silently misses a crash.
+    # Inherently a race (we look once); a process that dies later is `wait`'s job.
+    if state in ("FAILED", "KILLED", "OOM", "LOST"):
+        return EX_FAILED
     return EX_OK
 
 
@@ -457,9 +467,10 @@ def cmd_wait(args: argparse.Namespace) -> int:
     stdout_path = run_dir(name) / "stdout"
     deadline = (time.monotonic() + args.timeout) if args.timeout else None
     pos = 0
+    tail = ""  # bytes read past the last newline; a marker may span two reads
 
     def scan() -> str | None:
-        nonlocal pos
+        nonlocal pos, tail
         try:
             with stdout_path.open("r", errors="replace") as fh:
                 fh.seek(pos)
@@ -469,10 +480,18 @@ def cmd_wait(args: argparse.Namespace) -> int:
             return None
         if not chunk or ready_re is None:
             return None
-        for line in chunk.splitlines():
+        # Carry the incomplete last line forward instead of consuming it.
+        # PYTHONUNBUFFERED makes `print("bodies:", n)` one write() per argument,
+        # so a poll landing mid-line would otherwise split the marker across two
+        # reads and never match it -- a ready process reported as TIMEOUT.
+        lines = (tail + chunk).split("\n")
+        tail = lines.pop()
+        for line in lines:
             if ready_re.search(line):
                 return line
-        return None
+        # Match the partial line too, so a marker not yet newline-terminated
+        # still counts (this is what the old chunk.splitlines() gave us).
+        return tail if ready_re.search(tail) else None
 
     while True:
         hit = scan()

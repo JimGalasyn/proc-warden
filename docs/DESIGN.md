@@ -80,6 +80,14 @@ Note the deliberate ordering in `cmd_wait`: scan for the marker, check liveness,
 then **scan once more** before declaring death — otherwise a marker printed in the
 same instant as exit would be missed.
 
+The scanner must also carry an incomplete trailing line across polls. `stdout` is
+read incrementally, and `PYTHONUNBUFFERED=1` means `print("bodies:", n)` reaches
+the file as one `write()` *per argument* — so a poll landing mid-line splits the
+marker across two reads. Consuming that partial line (as the first version did)
+makes `--ready 'bodies: [0-9]+'` match nothing and report `TIMEOUT` for a process
+that is ready. The same failure this invariant forbids, arriving through the
+reader instead of the writer.
+
 ### 5. Status outlives the process, and unknown is not "fine"
 
 The unit carries an `ExecStopPost` that writes `code=/status=/result=` to

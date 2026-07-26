@@ -55,6 +55,10 @@ when a shortcut looks obviously fine.
 | 4 | busy: name live, or GPU lease held | pick another name, or `--gpu-wait`, or `proc gpu` to see the holder |
 | 5 | environment can't do this | report it; don't retry |
 
+`proc run` returns 1 if the process is already dead when it returns (a command
+that crashes on startup), so `proc run ... || …` is worth writing. It checks only
+once — for anything later, use `proc wait`.
+
 ## States
 
 `RUNNING` · `EXITED` (0) · `FAILED` (nonzero) · `KILLED` (signal) · `OOM` ·
