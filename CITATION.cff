@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+title: "proc-warden: process lifetime you can reason about"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - given-names: James P.
+    family-names: Galasyn
+  - given-names: Claude
+    family-names: Théodore
+repository-code: "https://github.com/JimGalasyn/proc-warden"
+url: "https://github.com/JimGalasyn/proc-warden"
+abstract: >-
+  A dependency-free CLI over systemd-run --user that makes local process
+  lifetime exact instead of inferred. Every run is given a name at launch rather
+  than matched by a command-line pattern, so identity is held by the kernel:
+  killing is cgroup-wide and reaps children that escaped with setsid, exclusion
+  is an flock lease that cannot go stale or self-deadlock, and exit status is
+  recorded by ExecStopPost so it outlives the process. Readiness is a positive
+  match on a log line, never the absence of output, and the states LEASE_BUSY
+  and LOST keep "never started" and "record vanished" from being mistaken for
+  running or for success.
+keywords:
+  - systemd
+  - cgroups
+  - process-management
+  - supervisor
+  - lifecycle
+  - gpu
+  - flock
+  - wsl2
+  - reproducibility
+license: MIT
+version: 0.1.1
+date-released: "2026-07-26"

@@ -1,8 +1,34 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-07-26
 
-Three fixes found by review, each with a regression test that fails against 0.1.0.
+First published version: 0.1.0 existed only as a local commit.
+
+### Packaging
+
+- Installable from PyPI as `proc-warden`, providing both the `proc` and
+  `proc-warden` console scripts. Still **zero runtime dependencies**; the CLI
+  moved to `src/proc_warden/cli.py`, and the root `proc` script is now a shim so
+  a clone (or a symlink into one) keeps working with nothing installed.
+- MIT `LICENSE`, `CITATION.cff`, and `.zenodo.json`.
+- CI on Python 3.10–3.13: unit tests everywhere, integration tests against a real
+  systemd user manager, a packaging job that builds and `twine check`s the
+  artifacts and runs both console scripts, plus CodeQL and Codecov.
+- `docs/CONTRIBUTING.md` and `docs/RELEASING.md`.
+
+### Tests
+
+- 60 unit tests covering naming, status parsing, the state machine, environment
+  assembly, argv resolution, and the `--` split — none of which need systemd, so
+  the suite is no longer all-or-nothing on the host having a user manager.
+- `PROC_REQUIRE_SYSTEMD=1` turns the integration suite's skip into a hard error,
+  so CI cannot pass by skipping the half that proves the tool works.
+- Coverage now follows the subprocesses the integration tests spawn, which is the
+  difference between a reported 38% and the real 86%.
+
+### Fixes
+
+Three defects found by review, each with a regression test that fails against 0.1.0.
 
 - **`wait --ready` could miss a marker that was printed.** The incremental
   scanner consumed the partial trailing line, so a regex spanning two reads never

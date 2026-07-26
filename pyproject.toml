@@ -1,0 +1,93 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proc-warden"
+version = "0.1.1"
+description = "Process lifetime you can reason about: named systemd-run units with cgroup-wide kill, exit status that outlives the process, and exclusive GPU leases."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+  { name = "James P. Galasyn" },
+  { name = "Claude Théodore" },
+]
+keywords = [
+  "systemd", "cgroups", "process-management", "supervisor", "lifecycle",
+  "gpu", "flock", "wsl2", "reproducibility",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Systems Administration",
+  "Topic :: Utilities",
+]
+# No runtime dependencies, deliberately. proc is a protocol over tools that are
+# already installed (systemd, flock); adding a dependency would undercut that.
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+  "pytest-cov>=4",
+]
+
+[project.urls]
+Homepage = "https://github.com/JimGalasyn/proc-warden"
+Issues = "https://github.com/JimGalasyn/proc-warden/issues"
+Changelog = "https://github.com/JimGalasyn/proc-warden/blob/main/CHANGELOG.md"
+
+[project.scripts]
+# `proc` is the name every doc, example, and the agent skill uses. `proc-warden`
+# is the unambiguous one, for anyone who already has a `proc` on their PATH.
+proc-warden = "proc_warden.cli:run"
+proc = "proc_warden.cli:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/proc_warden"]
+
+[tool.hatch.build.targets.sdist]
+# `proc` is not optional here: tests/test_proc.py invokes the repo-root shim, so
+# an sdist with tests/ but no shim ships a suite that cannot run.
+include = [
+  "src/", "tests/", "docs/", "skills/", "proc",
+  "README.md", "CHANGELOG.md", "LICENSE", "CITATION.cff",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: needs a live systemd user manager (skipped where there isn't one)",
+]
+# NOTE: a stray *globally installed* pytest plugin can crash collection before
+# any of this repo's code runs (a system-wide hydra/omegaconf does exactly that
+# on the author's box). There is no setting here that prevents it -- autoload
+# happens before the config is read. Run with PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+# if collection dies somewhere you don't recognize. See docs/CONTRIBUTING.md.
+
+[tool.coverage.run]
+source = ["proc_warden"]
+# The integration tests drive the real CLI in a subprocess -- that is the whole
+# point of them, since proc's job is to survive process boundaries. Without
+# parallel mode plus COVERAGE_PROCESS_START in the environment, every one of
+# those runs is invisible to coverage and the reported number reflects only the
+# unit tests. See docs/CONTRIBUTING.md.
+parallel = true
+sigterm = true
+
+[tool.coverage.report]
+exclude_also = [
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+]

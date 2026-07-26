@@ -33,8 +33,20 @@ def have_user_systemd() -> bool:
     return (r.stdout or r.stderr).strip() not in ("offline", "unknown", "")
 
 
+_HAVE_SYSTEMD = have_user_systemd()
+
+# On a developer box without a user manager, skipping is right. In CI it is not:
+# a suite that skips wholesale is green for the wrong reason, and this is the
+# half of the suite that actually proves proc works. Set PROC_REQUIRE_SYSTEMD=1
+# (the CI workflow does) to turn the skip into a hard failure.
+if not _HAVE_SYSTEMD and os.environ.get("PROC_REQUIRE_SYSTEMD") == "1":
+    raise RuntimeError(
+        "PROC_REQUIRE_SYSTEMD=1 but there is no systemd user manager, so the "
+        "integration tests would silently skip. Either provision one or unset "
+        "PROC_REQUIRE_SYSTEMD.")
+
 pytestmark = pytest.mark.skipif(
-    not have_user_systemd(), reason="needs a systemd user manager")
+    not _HAVE_SYSTEMD, reason="needs a systemd user manager")
 
 
 @pytest.fixture
