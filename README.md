@@ -5,6 +5,7 @@
 [![CodeQL](https://github.com/JimGalasyn/proc-warden/actions/workflows/codeql.yml/badge.svg)](https://github.com/JimGalasyn/proc-warden/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/JimGalasyn/proc-warden?include_prereleases)](https://github.com/JimGalasyn/proc-warden/releases)
 [![PyPI](https://img.shields.io/pypi/v/proc-warden)](https://pypi.org/project/proc-warden/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21611649.svg)](https://doi.org/10.5281/zenodo.21611649)
 [![Python](https://img.shields.io/pypi/pyversions/proc-warden)](https://pypi.org/project/proc-warden/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
