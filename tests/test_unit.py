@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
+import re
 import time
 
 import pytest
@@ -38,7 +40,24 @@ def test_argparse_exit_code_does_not_collide_with_timeout():
 
 
 def test_version_is_a_single_source_of_truth():
-    assert __version__ == "0.1.1"
+    """The version is written in three places by hand (pyproject, __init__,
+    CITATION.cff) and they must agree -- the publish workflow refuses to build
+    when the tag disagrees with pyproject, but nothing else checks the other two.
+    Asserting a literal here would just mean editing a fourth place per release."""
+    # Read by regex, not tomllib/yaml: tomllib is 3.11+, and this has to run on
+    # the whole supported matrix without pulling in a parser dependency.
+    root = pathlib.Path(__file__).resolve().parent.parent
+
+    def first(path, pattern):
+        m = re.search(pattern, (root / path).read_text(), re.M)
+        assert m, f"no version found in {path}"
+        return m.group(1)
+
+    pyproject = first("pyproject.toml", r'^version\s*=\s*"([^"]+)"')
+    citation = first("CITATION.cff", r'^version:\s*"?([^"\s]+)"?')
+    assert __version__ == pyproject == citation, (
+        f"version mismatch: __init__={__version__} pyproject={pyproject} "
+        f"CITATION.cff={citation}")
 
 
 # --- naming ------------------------------------------------------------------

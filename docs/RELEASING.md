@@ -33,17 +33,30 @@ break later.
 - [x] GitHub Environment named `pypi`
 - [x] **PyPI trusted publishing**, registered as a *pending* publisher (the form
       for a project that does not exist yet). The first successful publish
-      creates `proc-warden` and converts it to a normal publisher.
+      creates `systemd-proc` and converts it to a normal publisher.
 - [x] **Zenodo** synced to the repo, waiting on a release. It mints a DOI when
       one is published; it does **not** backfill, so a release published before
       the sync would never get one.
+
+### Why the PyPI name is not `proc-warden`
+
+PyPI compares project names with `-`, `_`, and `.` stripped out entirely, and
+`procwarden` was taken in May 2026 by an unrelated Python library for supervising
+subprocesses inside one program. So `proc-warden` is permanently unavailable and
+the distribution is **`systemd-proc`**. Do not "fix" this back — the upload will
+be rejected with *"This project name is too similar to an existing project"*.
+
+Everything else keeps the original name: the repo, the import package
+`proc_warden`, and both console scripts.
+
+### Pending publisher fields
 
 The pending publisher must match the workflow exactly, or the upload is rejected
 with a confusing permissions error:
 
 | Field | Value |
 | --- | --- |
-| PyPI Project Name | `proc-warden` |
+| PyPI Project Name | `systemd-proc` |
 | Owner | `JimGalasyn` |
 | Repository name | `proc-warden` |
 | Workflow name | `publish-pypi.yml` |
@@ -68,7 +81,7 @@ worse than no badge.
 ## Verifying a release
 
 ```bash
-pip install --no-cache-dir proc-warden==X.Y.Z
+pip install --no-cache-dir systemd-proc==X.Y.Z
 proc --help && proc-warden --help
 ```
 

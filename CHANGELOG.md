@@ -1,13 +1,30 @@
 # Changelog
 
+## 0.1.2 — 2026-07-26
+
+First version actually on PyPI, under the name **`systemd-proc`**.
+
+`0.1.1` was tagged, released on GitHub, and archived by Zenodo, but its PyPI
+upload never happened: the distribution name `proc-warden` turns out to be
+permanently unavailable. PyPI compares names with `-`, `_`, and `.` stripped, and
+`procwarden` was registered in May 2026 by an unrelated library. Rather than move
+a tag that Zenodo had already minted a DOI for, the corrected package ships here.
+
+- `pip install systemd-proc`. The repo, the import package `proc_warden`, and
+  both console scripts (`proc`, `proc-warden`) are unchanged — only the
+  `pip install` string differs.
+- `docs/RELEASING.md` records why, so it does not get "fixed" back.
+
 ## 0.1.1 — 2026-07-26
 
-First published version: 0.1.0 existed only as a local commit.
+Tagged and archived, but never published to PyPI — see 0.1.2. Cited by
+[10.5281/zenodo.21611650](https://doi.org/10.5281/zenodo.21611650).
+
+0.1.0 existed only as a local commit.
 
 ### Packaging
 
-- Installable from PyPI as `proc-warden`, providing both the `proc` and
-  `proc-warden` console scripts. Still **zero runtime dependencies**; the CLI
+- Made installable, providing both the `proc` and `proc-warden` console scripts. Still **zero runtime dependencies**; the CLI
   moved to `src/proc_warden/cli.py`, and the root `proc` script is now a shim so
   a clone (or a symlink into one) keeps working with nothing installed.
 - MIT `LICENSE`, `CITATION.cff`, and `.zenodo.json`.
