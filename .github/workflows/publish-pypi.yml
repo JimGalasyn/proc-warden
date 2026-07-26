@@ -5,10 +5,15 @@ name: Publish to PyPI
 # the release commit -- it must match the tag. `make-release` in docs/RELEASING.md
 # checks that for you.
 #
-# Auth is an API token in the PYPI_API_TOKEN repository secret. PyPI's preferred
-# mechanism is OIDC trusted publishing, which stores no credential at all; moving
-# to it is a one-time click-through on pypi.org (see docs/RELEASING.md), after
-# which the `password:` line below is deleted and `id-token: write` added.
+# Auth is OIDC trusted publishing: PyPI verifies a short-lived token minted by
+# GitHub for this repo + workflow + environment, so no credential is stored here.
+# It is configured on pypi.org as a *pending* publisher, which is the form used
+# for a project that does not exist yet -- the first successful run creates it and
+# converts the pending publisher into a normal one.
+#
+# The four values below must match the pending publisher exactly, or the upload
+# is rejected: repository JimGalasyn/proc-warden, workflow publish-pypi.yml,
+# environment pypi. Renaming any of them means updating it on pypi.org too.
 
 on:
   release:
@@ -54,6 +59,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')   # defense in depth; mirrors build
     runs-on: ubuntu-latest
     environment: pypi
+    permissions:
+      id-token: write   # mint the OIDC token PyPI checks; nothing is stored
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -61,5 +68,3 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}

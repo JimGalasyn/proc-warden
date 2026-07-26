@@ -26,23 +26,20 @@ gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <(sed -n '/^## X.Y.Z/,/^#
 
 ## Before the first publish (one-time)
 
+All done — recorded here because these four values are load-bearing and easy to
+break later.
+
 - [x] `CODECOV_TOKEN` repository secret
-- [x] `PYPI_API_TOKEN` repository secret
 - [x] GitHub Environment named `pypi`
-- [ ] **Zenodo:** sign in at <https://zenodo.org> with GitHub, enable the toggle
-      for `JimGalasyn/proc-warden` under *GitHub*. It mints a DOI on the **next**
-      release, so this has to be on *before* the first one. Then add the concept
-      DOI to `README.md` (badge), `CITATION.cff` (`doi:` + `identifiers:`), and
-      commit — see the `run-farm` versions of those files for the exact shape.
+- [x] **PyPI trusted publishing**, registered as a *pending* publisher (the form
+      for a project that does not exist yet). The first successful publish
+      creates `proc-warden` and converts it to a normal publisher.
+- [x] **Zenodo** synced to the repo, waiting on a release. It mints a DOI when
+      one is published; it does **not** backfill, so a release published before
+      the sync would never get one.
 
-The Zenodo step is the only one that cannot be done from the command line, and
-the only one that is order-sensitive: enabling it after a release does not
-retroactively mint a DOI for that release.
-
-## Moving to trusted publishing (recommended, later)
-
-PyPI prefers OIDC, which stores no credential in the repo at all. One-time setup
-on pypi.org → *Account* → *Publishing* → *Add a pending publisher*:
+The pending publisher must match the workflow exactly, or the upload is rejected
+with a confusing permissions error:
 
 | Field | Value |
 | --- | --- |
@@ -52,9 +49,21 @@ on pypi.org → *Account* → *Publishing* → *Add a pending publisher*:
 | Workflow name | `publish-pypi.yml` |
 | Environment name | `pypi` |
 
-Then in `publish-pypi.yml`: delete the `with: password:` block from the publish
-step and add `permissions: id-token: write` to that job. Once it works, delete
-the `PYPI_API_TOKEN` secret.
+Renaming the repo, the workflow file, or the environment means updating it on
+pypi.org too.
+
+## After the first release: record the DOI
+
+Zenodo mints two DOIs — a *concept* DOI that always resolves to the latest
+version, and a *version* DOI for that specific release. Add them:
+
+- `README.md` — badge, using the **concept** DOI:
+  `[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)`
+- `CITATION.cff` — a top-level `doi:` (concept), plus an `identifiers:` list
+  giving both. See `run-farm`'s `CITATION.cff` for the exact shape.
+
+The badge is deliberately absent until then: a DOI badge pointing at nothing is
+worse than no badge.
 
 ## Verifying a release
 
