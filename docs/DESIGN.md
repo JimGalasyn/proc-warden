@@ -178,8 +178,20 @@ two of them were surprises:
   `EX_TIMEOUT=2` and made a typo indistinguishable from a timed-out wait. The
   parser is subclassed to exit 3. Caught by a test, not by reading.
 
-## Repository constraint
+## Repository
 
-This repo stays **local-only**: the local security policy (Airlock) does not permit
-creating or pushing to remotes outside the Confluent org, so there is no `origin`
-and no `gh repo create` step. Distribution, if ever needed, is by bundle or patch.
+Public, at <https://github.com/JimGalasyn/proc-warden>.
+
+An earlier draft of this document recorded the opposite — that the repo had to stay
+local-only, with no `origin`, because the Airlock policy forbade remotes outside
+the Confluent org. That constraint is stale: this is a personal project on a
+personal machine, published under a personal account.
+
+What does carry over is the reason the constraint existed. This is a public repo
+developed alongside work on a machine that has work credentials on it, so:
+
+- Nothing Confluent-internal belongs here — no internal hostnames, ticket
+  references, or code.
+- Commits should be authored with the personal identity, not `@confluent.io`.
+  Check `git log --format='%an <%ae>'` before the first push of anything that
+  started life on the work machine; 0.1.0 needed exactly that correction.
