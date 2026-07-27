@@ -5,8 +5,11 @@ description: Launch, watch, and kill local long-running processes unambiguously 
 
 # proc — process lifetime you can reason about
 
-`proc` is at `~/repos/proc-warden/proc` (symlinked to `~/bin/proc`). One stdlib-only
-Python file over `systemd-run --user`. Full rationale: `~/repos/proc-warden/docs/DESIGN.md`.
+Install with **`pip install systemd-proc`** — the PyPI name differs from the repo
+name, because `procwarden` was already taken. That puts `proc` (and `proc-warden`)
+on PATH. From a checkout, `./proc` is a shim that works with nothing installed;
+either entry point runs the same code. Zero runtime dependencies — it is all
+`systemd-run --user`. Full rationale: `docs/DESIGN.md` in the repo.
 
 ## The rules
 
