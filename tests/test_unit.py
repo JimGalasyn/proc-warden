@@ -277,6 +277,90 @@ def test_a_non_executable_file_is_not_a_command(tmp_path):
     assert cli.resolve_exe("notes.txt", str(tmp_path)) is None
 
 
+# --- bounded log tail --------------------------------------------------------
+
+class CountingFile:
+    """A file wrapper that records how many bytes were actually read."""
+
+    def __init__(self, fh):
+        self.fh = fh
+        self.read_bytes = 0
+
+    def seek(self, *a):
+        return self.fh.seek(*a)
+
+    def tell(self):
+        return self.fh.tell()
+
+    def read(self, n=-1):
+        data = self.fh.read(n)
+        self.read_bytes += len(data)
+        return data
+
+
+def _write(tmp_path, data: bytes):
+    p = tmp_path / "stdout"
+    p.write_bytes(data)
+    return p
+
+
+def test_tail_returns_the_last_n_lines(tmp_path):
+    p = _write(tmp_path, b"".join(b"line-%d\n" % i for i in range(100)))
+    with p.open("rb") as fh:
+        assert cli.tail_text(fh, 3).splitlines() == ["line-97", "line-98", "line-99"]
+
+
+def test_tail_of_more_lines_than_exist_returns_all(tmp_path):
+    p = _write(tmp_path, b"a\nb\n")
+    with p.open("rb") as fh:
+        assert cli.tail_text(fh, 100).splitlines() == ["a", "b"]
+
+
+def test_tail_of_an_empty_file_is_empty(tmp_path):
+    p = _write(tmp_path, b"")
+    with p.open("rb") as fh:
+        assert cli.tail_text(fh, 5) == ""
+
+
+def test_tail_handles_a_missing_trailing_newline(tmp_path):
+    """A live process is mid-line most of the time; the partial last line is
+    still the last line."""
+    p = _write(tmp_path, b"one\ntwo\nthree")
+    with p.open("rb") as fh:
+        assert cli.tail_text(fh, 2).splitlines() == ["two", "three"]
+
+
+def test_tail_spans_many_backward_blocks(tmp_path):
+    """The lines wanted are far further back than one read block, so the
+    backwards loop has to iterate rather than get lucky on the first chunk."""
+    lines = [b"x" * 200 + b"-%d" % i for i in range(2000)]  # ~400 KB
+    p = _write(tmp_path, b"\n".join(lines) + b"\n")
+    with p.open("rb") as fh:
+        got = cli.tail_text(fh, 2).splitlines()
+    assert got == [lines[-2].decode(), lines[-1].decode()]
+
+
+def test_tail_does_not_read_the_whole_file(tmp_path):
+    """The actual point of the change: `logs -n 3` on a multi-gigabyte training
+    log must cost the size of three lines, not the size of the log."""
+    p = _write(tmp_path, b"".join(b"line-%d\n" % i for i in range(400_000)))  # ~4 MB
+    size = p.stat().st_size
+    with p.open("rb") as fh:
+        counting = CountingFile(fh)
+        assert cli.tail_text(counting, 3).splitlines()[-1] == "line-399999"
+    assert counting.read_bytes <= 2 * cli.LOG_BLOCK, (
+        f"read {counting.read_bytes} of {size} bytes to get 3 lines")
+
+
+def test_tail_decodes_multibyte_characters_split_across_blocks(tmp_path):
+    """A block boundary can fall inside a UTF-8 sequence. The backwards read
+    reassembles bytes before decoding, so this must not produce mojibake."""
+    line = ("héllo-wörld-" + "ü" * 50).encode()
+    p = _write(tmp_path, b"\n".join([b"p" * 100_000, line]) + b"\n")
+    with p.open("rb") as fh:
+        assert cli.tail_text(fh, 1) == line.decode()
+
+
 # --- the `--` split ----------------------------------------------------------
 
 def _parsed(monkeypatch, argv):

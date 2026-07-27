@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+The three findings left over from the original review, each with a regression
+test.
+
+- **`logs` no longer reads the whole file to print the end of it.** `logs -n 20`
+  slurped the entire log into memory first; on a multi-gigabyte training log —
+  exactly what this tool exists to supervise — that is gigabytes to print twenty
+  lines. It now reads backwards in 64 KiB blocks and stops as soon as it has the
+  lines asked for. Streaming the whole log (`logs` with no `-n`) no longer buffers
+  it either. Measured by a test that counts bytes read: ~4 MB file, 3 lines
+  wanted, under 128 KiB read.
+- **A failed launch no longer destroys the previous run's record.** The run
+  directory was deleted before `systemd-run` was known to have succeeded, so a
+  typo in the command threw away the logs and exit status of the run being
+  replaced. The old directory is now moved aside and only discarded once the new
+  unit is actually up; every failure path puts it back.
+- **Two concurrent `proc run` of the same name can no longer corrupt each
+  other.** Both passed the RUNNING check and the loser deleted the winner's run
+  directory out from under a live unit. Launches are now serialized per name by
+  an `flock`ed lock file, giving one clean winner and one clean `EX_BUSY`.
+- **`meta.json` is written `0600`.** `--env` is the one path by which a real
+  secret reaches that file, and it was world-readable. Created with the mode
+  rather than `chmod`ed afterwards, so there is no window. Note that `--env` is
+  still not a secret channel — the values are unit properties and visible to your
+  own user; the README says so plainly now.
+- Fixed in passing: when a followed process died, `logs -f` read the bytes
+  written in its last moments and discarded them instead of printing them.
+
 ## 0.1.3 — 2026-07-27
 
 Documentation only; no behaviour change.

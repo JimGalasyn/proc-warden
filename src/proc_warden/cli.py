@@ -12,6 +12,9 @@ supervisor. See docs/DESIGN.md for the six invariants and why each exists.
 from __future__ import annotations
 
 import argparse
+import codecs
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -42,6 +45,7 @@ POLL = 0.25
 DEFAULT_WAIT_TIMEOUT = 900
 DEFAULT_STOP_TIMEOUT = 30
 GPU_LEAK_SLACK_MIB = 64  # below this, treat a baseline diff as noise
+LOG_BLOCK = 65536  # read granularity for logs, forwards and backwards
 
 # Environment the unit inherits from the calling shell. systemd's user manager
 # has its own environment, so a venv-activated shell would otherwise be lost --
@@ -187,7 +191,10 @@ def all_runs() -> list[dict]:
         return []
     out = []
     for d in sorted(RUNS.iterdir()):
-        if d.is_dir():
+        # A dot directory is bookkeeping, never a run: a valid name cannot start
+        # with one (NAME_RE), and a replacement in flight parks the previous run
+        # at .<name>.replacing.<pid> until the new unit is up.
+        if d.is_dir() and not d.name.startswith("."):
             st = read_state(d.name)
             if st:
                 out.append(st)
@@ -266,6 +273,24 @@ def resolve_exe(prog: str, cwd: str) -> str | None:
     return shutil.which(prog)
 
 
+@contextlib.contextmanager
+def name_lock(name: str):
+    """Hold the right to launch under `name` for the duration of a launch.
+
+    Two concurrent `proc run <same name>` would otherwise both pass the RUNNING
+    check and the loser would delete the winner's run directory out from under a
+    live unit. flock on our own fd, not the FLOCK binary: this lock belongs to
+    the launching `proc`, not to the child, and must be gone when we return.
+    """
+    RUNS.mkdir(parents=True, exist_ok=True)
+    with (RUNS / f".{name}.lock").open("w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     require_env()
     name = check_name(args.name)
@@ -276,6 +301,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         die("--gpu-wait only means something with --gpu: there is no lease to queue "
             "for. Add --gpu DEV (or --gpu for device 0).", EX_USAGE)
 
+    with name_lock(name):
+        return launch(args, name)
+
+
+def launch(args: argparse.Namespace, name: str) -> int:
     existing = read_state(name)
     if existing and existing["state"] == "RUNNING":
         if not args.replace:
@@ -294,23 +324,34 @@ def cmd_run(args: argparse.Namespace) -> int:
                 EX_BUSY)
 
     d = run_dir(name)
+    prev = existing.get("state") if existing else "?"
+    stale: Path | None = None
     if d.exists():
-        prev = existing.get("state") if existing else "?"
-        say(f"replacing previous {prev} run of {name} (logs in {d} are discarded)")
-        shutil.rmtree(d)
+        # Moved aside, not deleted. Everything below can still fail -- a bad
+        # --cwd, a typo in the command, systemd-run refusing -- and the previous
+        # run's logs and exit status are the only record that it ever happened.
+        # A dot prefix keeps it out of `ls`, which never lists dot directories.
+        stale = d.with_name(f".{name}.replacing.{os.getpid()}")
+        shutil.rmtree(stale, ignore_errors=True)
+        d.rename(stale)
     d.mkdir(parents=True)
+
+    def abort(msg: str, code: int) -> None:
+        """Undo the half-built run directory and put the previous one back."""
+        shutil.rmtree(d, ignore_errors=True)
+        if stale is not None:
+            stale.rename(d)
+        die(msg, code)
 
     cwd = os.path.abspath(args.cwd or os.getcwd())
     if not os.path.isdir(cwd):
-        shutil.rmtree(d)
-        die(f"no such working directory: {cwd}", EX_USAGE)
+        abort(f"no such working directory: {cwd}", EX_USAGE)
 
     argv = list(args.cmd)
     resolved = resolve_exe(argv[0], cwd)
     if resolved is None:
-        shutil.rmtree(d)
-        die(f"command not found: {argv[0]} (bare names use the caller's PATH; "
-            f"a path is relative to {cwd})", EX_USAGE)
+        abort(f"command not found: {argv[0]} (bare names use the caller's PATH; "
+              f"a path is relative to {cwd})", EX_USAGE)
     argv[0] = resolved  # so `python` means this shell's venv python, not systemd's
 
     env = build_env(args.env)
@@ -348,12 +389,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         "gpu_baseline_mib": gpu_used_mib(args.gpu) if args.gpu is not None else None,
         "env": env, "started_at": time.time(),
     }
-    (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    # 0600, created that way rather than chmod'd after: `--env` is the one path
+    # by which a real secret reaches this file (HF_TOKEN=..., WANDB_API_KEY=...).
+    # The passthrough allowlist deliberately keeps ambient secrets out, but an
+    # explicit --env is the caller's choice and must not land world-readable.
+    fd = os.open(d / "meta.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(meta, indent=2) + "\n")
 
     # Clear any leftover failed unit of the same name so the name is reusable.
     sh(["systemctl", "--user", "reset-failed", unit_of(name)])
 
-    launch = [
+    launch_argv = [
         "systemd-run", "--user", "--collect",
         f"--unit={unit_of(name)}",
         f"--description=proc run {name}",
@@ -365,13 +412,22 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"--property=ExecStopPost={stop_post}",
     ]
     for k, v in env.items():
-        launch.append(f"--setenv={k}={v}")
-    launch += ["--"] + exec_argv
+        launch_argv.append(f"--setenv={k}={v}")
+    launch_argv += ["--"] + exec_argv
 
-    r = sh(launch, timeout=60)
+    r = sh(launch_argv, timeout=60)
     if r.returncode != 0:
+        shutil.rmtree(d, ignore_errors=True)
+        if stale is not None:
+            stale.rename(d)  # the old run is still the only record; keep it
         say(f"systemd-run failed: {(r.stderr or r.stdout).strip()}", err=True)
         return EX_FAILED
+
+    # Committed: the unit exists and owns the new directory, so the old one is
+    # genuinely superseded. Only now is discarding it correct.
+    if stale is not None:
+        shutil.rmtree(stale, ignore_errors=True)
+        say(f"replaced previous {prev} run of {name} (its logs are discarded)")
 
     # Catch an immediate death -- above all a busy GPU lease -- so contention
     # reads as contention rather than as a mysteriously finished run. Only a
@@ -522,6 +578,27 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
 # --- logs --------------------------------------------------------------------
 
+def tail_text(fh, n: int, *, block: int = LOG_BLOCK) -> str:
+    """The last `n` lines of an open binary file, read backwards in blocks.
+
+    A training run's log is routinely gigabytes; `logs -n 20` should cost the
+    size of those twenty lines, not the size of the log.
+    """
+    fh.seek(0, os.SEEK_END)
+    pos = fh.tell()
+    buf = b""
+    # n + 1 newlines, so the first line we keep is known to be complete.
+    while pos > 0 and buf.count(b"\n") <= n:
+        step = min(block, pos)
+        pos -= step
+        fh.seek(pos)
+        buf = fh.read(step) + buf
+    lines = buf.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()  # a trailing newline ends the last line, it does not start one
+    return "\n".join(s.decode("utf-8", errors="replace") for s in lines[-n:])
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     require_env()
     name = check_name(args.name)
@@ -533,36 +610,45 @@ def cmd_logs(args: argparse.Namespace) -> int:
         say("no output yet")
         return EX_OK
 
-    if not args.follow:
-        text = path.read_text(errors="replace")
-        lines = text.splitlines()
-        if args.tail:
-            lines = lines[-args.tail:]
-        for line in lines:
-            print(line)
-        return EX_OK
+    # Binary plus an incremental decoder, not text mode: we seek to byte offsets
+    # (text mode cannot), and a read boundary can land inside a multi-byte
+    # character, which a per-chunk decode would turn into two replacement chars.
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
-    # Follow, but always terminate: when the process is gone and the file is
-    # drained, stop. `tail -f` would hang here forever.
-    with path.open("r", errors="replace") as fh:
+    def emit(data: bytes, *, final: bool = False) -> None:
+        text = decoder.decode(data, final)
+        if text:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
+    with path.open("rb") as fh:
         if args.tail:
-            fh.seek(0)
-            for line in fh.read().splitlines()[-args.tail:]:
-                print(line)
+            text = tail_text(fh, args.tail)
+            if text:
+                print(text)
+            fh.seek(0, os.SEEK_END)
         else:
-            for line in fh:
-                print(line, end="" if line.endswith("\n") else "\n")
+            while True:  # stream it; never hold the whole log in memory
+                chunk = fh.read(LOG_BLOCK)
+                if not chunk:
+                    break
+                emit(chunk)
+
+        if not args.follow:
+            return EX_OK
+
+        # Follow, but always terminate: when the process is gone and the file is
+        # drained, stop. `tail -f` would hang here forever.
         while True:
-            chunk = fh.read()
+            chunk = fh.read(LOG_BLOCK)
             if chunk:
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
+                emit(chunk)
                 continue
             st = read_state(name) or {}
             if st.get("state") != "RUNNING":
-                if not fh.read():
-                    say(f"--- {name} is {st.get('state', '?')}; end of log")
-                    return EX_OK if st.get("state") == "EXITED" else EX_FAILED
+                emit(fh.read(), final=True)  # drain what it wrote as it died
+                say(f"--- {name} is {st.get('state', '?')}; end of log")
+                return EX_OK if st.get("state") == "EXITED" else EX_FAILED
             time.sleep(POLL)
 
 

@@ -136,6 +136,10 @@ Stated plainly, because the whole point is to not be surprised:
   redirection). `proc` refuses to start otherwise rather than misbehave.
 - **A `--gpu-wait` run reports `RUNNING` while it is still queued** for the lease;
   its stdout stays empty until it acquires.
+- **`--env` is not a secret channel.** Values are passed as unit properties, so
+  `systemctl --user show proc-<name>` prints them, and they are recorded in
+  `meta.json`. That file is `0600` so other users on the box cannot read it, but
+  anything you pass is plainly visible to *you* — and to anything running as you.
 - **`PYTHONUNBUFFERED=1` is set by default**, because stdout is a file and Python
   would otherwise block-buffer a startup readiness marker out of existence. Override
   with `--env PYTHONUNBUFFERED=` if you need the default buffering.
@@ -145,7 +149,7 @@ Stated plainly, because the whole point is to not be surprised:
 `$PROC_HOME` (default `~/.local/state/proc`), reconstructible after a reboot:
 
 ```
-runs/<name>/meta.json    # argv, resolved binary, cwd, env, GPU baseline, start time
+runs/<name>/meta.json    # argv, resolved binary, cwd, env, GPU baseline, start time (0600)
 runs/<name>/stdout       # stdout+stderr, merged, plain file
 runs/<name>/status       # code=/status=/result= written by the unit's ExecStopPost
 leases/gpu<N>.lock       # the lease; held by an fd, released by the kernel

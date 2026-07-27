@@ -9,8 +9,10 @@ No GPU is required: a lease is a lock file, so lease tests run anywhere.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -319,6 +321,62 @@ def test_command_is_resolved_on_the_callers_path_not_systemds(home, name, tmp_pa
         lambda: "i-am-the-venv-python" in (home / "runs" / name / "stdout").read_text())
 
 
+def test_a_failed_launch_keeps_the_previous_runs_record(home, name):
+    """The run dir used to be deleted before systemd-run was known to have
+    succeeded, so a typo in the command destroyed the only record that the
+    previous run ever happened -- its logs and its exit status."""
+    proc("run", name, "--", "/bin/sh", "-c", "echo FIRST-RUN; exit 3", home=home)
+    assert wait_until(lambda: state_of(name, home)["state"] == "FAILED")
+
+    r = proc("run", name, "--", "definitely-not-a-real-binary-xyz", home=home)
+    assert r.returncode == EX_USAGE
+
+    st = state_of(name, home)
+    assert st["state"] == "FAILED" and st["exit"] == 3, "previous record was destroyed"
+    assert "FIRST-RUN" in (home / "runs" / name / "stdout").read_text()
+
+
+def test_concurrent_launches_of_one_name_do_not_corrupt_each_other(home, name):
+    """Two `proc run <same name>` at once would both pass the RUNNING check, and
+    the loser would delete the winner's run directory out from under a live
+    unit. The name lock serializes them into a clean winner and a clean EX_BUSY."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(proc, "run", name, "--", "/bin/sleep", "20", home=home)
+                   for _ in range(2)]
+        a, b = [f.result() for f in futures]
+
+    assert sorted([a.returncode, b.returncode]) == [EX_OK, EX_BUSY], \
+        f"got {a.returncode}/{b.returncode}: {a.stderr!r} {b.stderr!r}"
+    assert state_of(name, home)["state"] == "RUNNING"
+    assert (home / "runs" / name / "meta.json").exists(), \
+        "the winner's record was deleted by the loser"
+
+
+def test_a_successful_replace_still_discards_the_old_logs(home, name):
+    """The converse: once the new unit is up, the old run really is superseded."""
+    proc("run", name, "--", "/bin/sh", "-c", "echo OLD-OUTPUT", home=home)
+    assert wait_until(lambda: state_of(name, home)["state"] != "RUNNING")
+    assert proc("run", name, "--", "/bin/sh", "-c", "echo NEW-OUTPUT",
+                home=home).returncode == EX_OK
+    assert wait_until(
+        lambda: "NEW-OUTPUT" in (home / "runs" / name / "stdout").read_text())
+    assert "OLD-OUTPUT" not in (home / "runs" / name / "stdout").read_text()
+    # and nothing is left lying around in the runs directory
+    assert not [p for p in (home / "runs").iterdir() if p.name.startswith(".")
+                and p.is_dir()]
+
+
+def test_meta_json_is_not_world_readable(home, name):
+    """`--env` is the one path by which a real secret reaches meta.json, so the
+    file must not be readable by other users on the box."""
+    proc("run", name, "--env", "FAKE_TOKEN=hunter2", "--", "/bin/true", home=home)
+    meta = home / "runs" / name / "meta.json"
+    assert wait_until(meta.exists)
+    mode = stat.S_IMODE(meta.stat().st_mode)
+    assert mode == 0o600, f"meta.json is {oct(mode)}"
+    assert "hunter2" in meta.read_text(), "the value IS recorded; that is why mode matters"
+
+
 def test_missing_command_is_reported_before_launching(home, name):
     r = proc("run", name, "--", "definitely-not-a-real-binary-xyz", home=home)
     assert r.returncode == EX_USAGE
@@ -375,6 +433,28 @@ def test_logs_follow_terminates_when_the_process_dies(home, name):
     r = proc("logs", name, "-f", home=home, timeout=45)  # timeout => hang => failure
     assert "one" in r.stdout and "two" in r.stdout
     assert "end of log" in r.stderr or "end of log" in r.stdout
+
+
+def test_logs_tail_on_a_log_far_larger_than_one_read_block(home, name):
+    """End-to-end version of the bounded tail: the interesting lines are megabytes
+    from the start, so a correct answer means the backwards read really works."""
+    proc("run", name, "--", sys.executable, "-c",
+         "for i in range(300000): print(f'line-{i}')", home=home)
+    assert wait_until(lambda: state_of(name, home)["state"] != "RUNNING", timeout=90)
+    out = home / "runs" / name / "stdout"
+    assert out.stat().st_size > 65536, "log needs to exceed one block to be a test"
+    r = proc("logs", name, "-n", "3", home=home)
+    assert r.stdout.splitlines() == ["line-299997", "line-299998", "line-299999"]
+
+
+def test_logs_tail_then_follow_picks_up_from_the_end(home, name):
+    """`-n` with `-f` must show the tail and then continue, not replay the file."""
+    proc("run", name, "--", "/bin/sh", "-c",
+         "echo old-1; echo old-2; echo old-3; sleep 1; echo NEW-LINE", home=home)
+    assert wait_until(lambda: "old-3" in (home / "runs" / name / "stdout").read_text())
+    r = proc("logs", name, "-f", "-n", "1", home=home, timeout=45)
+    assert "old-3" in r.stdout and "NEW-LINE" in r.stdout
+    assert "old-1" not in r.stdout, "-n 1 should not have replayed the whole log"
 
 
 def test_logs_tail_limits_output(home, name):
