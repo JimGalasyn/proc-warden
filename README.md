@@ -56,7 +56,8 @@ tools you already have, and a dependency would undercut that claim. From a clone
 the repo runs with nothing installed at all:
 
 ```bash
-ln -s "$PWD/proc" ~/.local/bin/proc               # or anywhere on PATH
+mkdir -p ~/.local/bin                             # or anywhere on PATH
+ln -s "$PWD/proc" ~/.local/bin/proc
 mkdir -p ~/.claude/skills
 ln -s "$PWD/skills/proc-lifecycle" ~/.claude/skills/proc-lifecycle
 ```
