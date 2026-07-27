@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.3 — 2026-07-27
+
+Documentation only; no behaviour change.
+
+- **`skills/proc-lifecycle/SKILL.md` no longer points at a checkout.** It opened
+  by locating `proc` at `~/repos/proc-warden/proc`, symlinked to `~/bin/proc` —
+  both wrong for anyone else, and the skill is read on its own, away from the
+  README, so an agent following it would look for a CLI that is not there. It now
+  leads with `pip install systemd-proc`, names the PyPI/repo discrepancy at the
+  point someone hits it, and keeps the checkout shim as an alternative.
+- Dropped the claim that `proc` is "one stdlib-only Python file", which stopped
+  being true when the CLI moved to `src/proc_warden/cli.py`. Zero runtime
+  dependencies is the claim that matters and is still exact.
+- README's clone instructions now use `~/.local/bin` and create it first. On
+  Debian and Ubuntu `~/.profile` adds that directory to PATH *only if it already
+  exists*, so without the `mkdir -p` the symlink fails and the directory would
+  not be on PATH even once created.
+
 ## 0.1.2 — 2026-07-26
 
 First version actually on PyPI, under the name **`systemd-proc`**.
