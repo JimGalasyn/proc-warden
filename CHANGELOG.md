@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.4 — 2026-07-27
 
 The three findings left over from the original review, each with a regression
-test.
+test. No interface change: same commands, same exit codes, same state names.
 
 - **`logs` no longer reads the whole file to print the end of it.** `logs -n 20`
   slurped the entire log into memory first; on a multi-gigabyte training log —

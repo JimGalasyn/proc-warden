@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "systemd-proc"
-version = "0.1.3"
+version = "0.1.4"
 description = "Process lifetime you can reason about: named systemd-run units with cgroup-wide kill, exit status that outlives the process, and exclusive GPU leases."
 readme = "README.md"
 license = { text = "MIT" }
