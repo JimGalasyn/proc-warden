@@ -1,16 +1,33 @@
 # Canonical identities for git log / shortlog / blame.
 #
-# All 15 commits here are authored as jim.galasyn@hotmail.com, but the author name
-# appears both as "Jim" and as "Jim Galasyn". Both map to one canonical form.
+# This comment used to say "no commit in this repo uses jim.galasyn@confluent.io." That
+# was false the moment it landed: the commit that ADDED this file — `235f509`, the
+# squash-merge of PR #11, 2026-07-27 — is itself authored jim.galasyn@confluent.io. It is
+# 1 of 17 commits as of 2026-08-01, and the only one.
 #
-# The second mapping is defensive rather than corrective: no commit in this repo
-# uses jim.galasyn@confluent.io. It is listed because the global ~/.gitconfig on at
-# least one machine still sets that address, and a repo-local user.email does not
-# survive a fresh clone — so a re-cloned checkout would silently start authoring
-# with it again.
+# How it got there, since nothing local was committed with the work identity: GitHub
+# squash-merge re-attributed it to the account's PUBLIC email, which is the work address,
+# instead of to the branch commit's author. Confirmed 2026-08-01 against the PR itself —
+# #11's two branch commits (`50fb8fa`, `c117752`) are both authored
+# jim.galasyn@hotmail.com, and the squashed result is not. exoclimate #1 shows the same
+# thing.
 #
-# Counts above are a snapshot; recompute with
-#   git log --format='%ae' | sort | uniq -c
+# It is INTERMITTENT, which is why it went unnoticed: five same-era squash merges
+# preserved the branch author, two of them merged within seconds of a re-attributed one
+# (jax-solitons #74 at 14:06:36 kept hotmail; this repo's #11 at 14:06:41 did not). The
+# trigger is undetermined — `gh api user/emails` needs the `user` scope to look further.
+# So the confluent.io mapping below is CORRECTIVE, not defensive: it rewrites a real
+# commit, and the mechanism that produced it can fire again on any future PR.
+#
+# Mapped rather than rewritten: `235f509` is pushed, this repo is PUBLIC and publishes to
+# PyPI as systemd-proc, and rewriting would change every SHA from it forward to remove an
+# address that stays recoverable from the public event history regardless.
+#
+# The author name also appears as both "Jim" (15 commits) and "Jim Galasyn" (2); both map
+# to one canonical form. `shortlog` is user-facing for a published package.
+#
+# Counts are a snapshot including this commit; recompute after the fact with
+#   git log --format='%an <%ae>' | sort | uniq -c
 #
 # Format: Proper Name <proper@email> <commit@email>
 
