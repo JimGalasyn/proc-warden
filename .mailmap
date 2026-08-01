@@ -3,7 +3,7 @@
 # This comment used to say "no commit in this repo uses jim.galasyn@confluent.io." That
 # was false the moment it landed: the commit that ADDED this file — `235f509`, the
 # squash-merge of PR #11, 2026-07-27 — is itself authored jim.galasyn@confluent.io. It is
-# 1 of 18 commits as of 2026-08-01, and the only one.
+# 1 of 19 commits as of 2026-08-01, and the only one.
 #
 # How it got there, since nothing local was committed with the work identity: GitHub
 # squash-merge re-attributed it to the account's PUBLIC email, which is the work address,
@@ -21,14 +21,25 @@
 # seven 07-27-era squash commits, re-attributed and preserved alike, carry committer
 # `GitHub <noreply@github.com>` with a valid signature, so the merge path does not
 # distinguish them either.
+#
+# It is also NOT SQUASH-SPECIFIC, measured 2026-08-01: GitHub re-attributes any commit
+# it composes on the account's behalf, merge commits included. jax-solitons PR #77,
+# merged with `--merge`, has two parents both authored jim.galasyn@hotmail.com and a
+# merge commit `b33f0a2` authored jim.galasyn@confluent.io. That firing is more recent
+# than every other on record, so the behaviour is live rather than historical. Merging
+# LOCALLY (`git merge --no-ff` then push) is authored from your own config and avoids
+# it — except where a ruleset requires code-scanning results for the pushed commit,
+# which a locally-made merge commit can never obtain.
+#
 # So the confluent.io mapping below is CORRECTIVE, not defensive: it rewrites a real
-# commit, and the mechanism that produced it can fire again on any future PR.
+# commit, and the mechanism that produced it can fire again on any future PR, whichever
+# merge button is used.
 #
 # Mapped rather than rewritten: `235f509` is pushed, this repo is PUBLIC and publishes to
 # PyPI as systemd-proc, and rewriting would change every SHA from it forward to remove an
 # address that stays recoverable from the public event history regardless.
 #
-# The author name also appears as both "Jim" (16 commits) and "Jim Galasyn" (2); both map
+# The author name also appears as both "Jim" (17 commits) and "Jim Galasyn" (2); both map
 # to one canonical form. `shortlog` is user-facing for a published package.
 #
 # Counts are a snapshot including this commit; recompute after the fact with
