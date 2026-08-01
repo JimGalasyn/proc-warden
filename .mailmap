@@ -3,7 +3,7 @@
 # This comment used to say "no commit in this repo uses jim.galasyn@confluent.io." That
 # was false the moment it landed: the commit that ADDED this file — `235f509`, the
 # squash-merge of PR #11, 2026-07-27 — is itself authored jim.galasyn@confluent.io. It is
-# 1 of 17 commits as of 2026-08-01, and the only one.
+# 1 of 18 commits as of 2026-08-01, and the only one.
 #
 # How it got there, since nothing local was committed with the work identity: GitHub
 # squash-merge re-attributed it to the account's PUBLIC email, which is the work address,
@@ -15,7 +15,12 @@
 # It is INTERMITTENT, which is why it went unnoticed: five same-era squash merges
 # preserved the branch author, two of them merged within seconds of a re-attributed one
 # (jax-solitons #74 at 14:06:36 kept hotmail; this repo's #11 at 14:06:41 did not). The
-# trigger is undetermined — `gh api user/emails` needs the `user` scope to look further.
+# trigger is undetermined, and two explanations are now ruled out (checked 2026-08-01
+# with the `user:email` scope): `gh api user/emails` reports jim.galasyn@confluent.io
+# still PRIMARY, verified and public — the state it was in when this fired — and all
+# seven 07-27-era squash commits, re-attributed and preserved alike, carry committer
+# `GitHub <noreply@github.com>` with a valid signature, so the merge path does not
+# distinguish them either.
 # So the confluent.io mapping below is CORRECTIVE, not defensive: it rewrites a real
 # commit, and the mechanism that produced it can fire again on any future PR.
 #
@@ -23,7 +28,7 @@
 # PyPI as systemd-proc, and rewriting would change every SHA from it forward to remove an
 # address that stays recoverable from the public event history regardless.
 #
-# The author name also appears as both "Jim" (15 commits) and "Jim Galasyn" (2); both map
+# The author name also appears as both "Jim" (16 commits) and "Jim Galasyn" (2); both map
 # to one canonical form. `shortlog` is user-facing for a published package.
 #
 # Counts are a snapshot including this commit; recompute after the fact with
