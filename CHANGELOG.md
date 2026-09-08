@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.5 — 2026-09-08
+
+One behavioural fix, found while putting the test suite itself under test. No
+interface change: same commands, same exit codes, same state names.
 
 - **A run that crashes in its first milliseconds no longer loses its record.**
   With `Type=exec`, a main process that exits nonzero before systemd has read
@@ -22,6 +25,9 @@
   way). Both now have unit tests that stage the interleaving or count the
   reads, as does the name lock, whose integration test can pass by scheduler
   accident.
+- Housekeeping: a `.mailmap` collapsing the author-name variants in the
+  history; `docs/RELEASING.md` now defers the cross-repo failure modes to the
+  shared `publish-release` skill and keeps only what is specific here.
 
 ## 0.1.4 — 2026-07-27
 
