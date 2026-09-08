@@ -445,7 +445,7 @@ def test_follow_drains_what_the_process_wrote_as_it_died(tmp_path, monkeypatch, 
         if len(calls) == 1:
             return {"state": "RUNNING"}  # the existence check at the top
         with out.open("a") as fh:
-            fh.write("last words\n")  # written between the empty read and the state check
+            fh.write("last words\n")  # lands during the state check: after the empty read, before the drain
         return {"state": "EXITED"}
 
     monkeypatch.setattr(cli, "read_state", read_state)
