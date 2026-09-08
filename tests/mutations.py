@@ -89,9 +89,12 @@ MUTATIONS = [
                  '        shutil.rmtree(stale, ignore_errors=True)\n'
                  '        d.rename(stale)\n',
              new='        shutil.rmtree(d)\n',
-             fires=("test_a_failed_launch_keeps_the_previous_runs_record",),
+             fires=("test_a_failed_launch_keeps_the_previous_runs_record",
+                    "test_a_launch_systemd_refuses_restores_the_previous_record"),
              note="the run dir was deleted before systemd-run was known to have "
-                  "succeeded; a typo in the command destroyed the previous run's record"),
+                  "succeeded; a typo in the command destroyed the previous run's record. "
+                  "The staged unit test asserts the same property for a launch systemd "
+                  "refuses, so both must fire."),
     Mutation("name-lock-is-a-no-op", CLI,
              old="        fcntl.flock(fh, fcntl.LOCK_EX)\n",
              new="",
