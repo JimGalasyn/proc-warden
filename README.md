@@ -157,7 +157,7 @@ leases/gpu<N>.lock       # the lease; held by an fd, released by the kernel
 
 ## Tests
 
-98 tests in two halves.
+117 tests in two halves, and twelve mutation contracts over them.
 
 `tests/test_proc.py` drives the **real** systemd user manager — no mocks, because
 the entire claim is that the kernel and systemd hold state we used to guess at.
@@ -169,9 +169,16 @@ as `RUNNING`, a readiness marker split across two writes.
 status parsing, the state machine, environment assembly, argv resolution, the
 `--` split — and needs no systemd, so it runs anywhere.
 
+`tests/mutations.py` puts the suite itself under test. Each defect recorded in
+the changelog is restored as a named [mutgate](https://github.com/JimGalasyn/mutgate)
+mutation that must turn its regression test red — and only that test — so a
+guard cannot quietly stop guarding. Writing them found three fixes with no test
+that could see them, and one defect in the launcher itself (0.1.5).
+
 ```bash
 pip install -e ".[test]"
 pytest -q
+mutgate run --timeout 300 tests/mutations.py   # needs the systemd user manager too
 ```
 
 No GPU is needed: a lease is just a lock file. Coverage requires subprocess
