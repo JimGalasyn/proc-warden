@@ -126,4 +126,11 @@ MUTATIONS = [
                   "milliseconds fails its Type=exec start job under load, and the launcher "
                   "threw the record away. The integration tests that exit fast lose that "
                   "race some of the time, which is why they are second detectors."),
+    Mutation("launch-failure-reads-as-finished", CLI,
+             old="        time.sleep(0.125)\n    return False\n",
+             new="        time.sleep(0.125)\n    return True\n",
+             fires=("test_a_launch_systemd_refuses_restores_the_previous_record",),
+             note="the guard of the guard: if finished_anyway cannot say no, a launch "
+                  "systemd refused reads as a finished run and the previous record is "
+                  "discarded for a directory with nothing in it"),
 ]

@@ -484,6 +484,36 @@ def test_a_run_that_dies_before_its_start_job_completes_is_a_failed_run(tmp_path
     assert (cli.RUNS / "r" / "meta.json").exists(), "the record was thrown away"
 
 
+def test_a_launch_systemd_refuses_restores_the_previous_record(tmp_path, monkeypatch, capsys):
+    """The other side of the race above: systemd-run fails and no status file
+    ever lands, so this was a launch that never happened. The half-built run
+    directory goes, the previous run's record comes back, and the caller is
+    told what systemd said."""
+    monkeypatch.setattr(cli, "RUNS", tmp_path / "runs")
+    monkeypatch.setattr(time, "sleep", lambda s: None)  # finished_anyway's wait
+    d = cli.RUNS / "r"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"cmd": ["/bin/true"], "cwd": "/tmp", "started_at": 0}))
+    (d / "status").write_text("code=exited status=3 result=exit-code\n")
+    (d / "stdout").write_text("FIRST-RUN\n")
+
+    def fake_sh(argv, *, timeout=30):
+        if argv[0] == "systemd-run":
+            return subprocess.CompletedProcess(
+                argv, 1, "", "Failed to start transient service unit: no such property\n")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(cli, "sh", fake_sh)
+    args = argparse.Namespace(cmd=["/bin/sh", "-c", "exit 3"], cwd=str(tmp_path), env=[],
+                              gpu=None, gpu_wait=None, replace=False, stop_timeout=30)
+    assert cli.launch(args, "r") == cli.EX_FAILED
+    assert "systemd-run failed" in capsys.readouterr().err
+    st = cli.read_state("r")
+    assert st["state"] == "FAILED" and st["exit"] == 3, "previous record not restored"
+    assert (d / "stdout").read_text() == "FIRST-RUN\n"
+    assert not list(cli.RUNS.glob(".r.replacing.*")), "the moved-aside copy was left behind"
+
+
 def test_name_lock_excludes_a_second_launcher(tmp_path, monkeypatch):
     """The lock that serializes two `proc run <same name>`. The integration
     test races two real launches, which the scheduler can serialize by
