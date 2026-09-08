@@ -4,6 +4,7 @@
 
 One behavioural fix, found while putting the test suite itself under test. No
 interface change: same commands, same exit codes, same state names.
+Cited by [10.5281/zenodo.22666930](https://doi.org/10.5281/zenodo.22666930).
 
 - **A run that crashes in its first milliseconds no longer loses its record.**
   With `Type=exec`, a main process that exits nonzero before systemd has read
