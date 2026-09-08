@@ -11,10 +11,12 @@ environment assembly, argv resolution, and the `--` split.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import pathlib
 import re
+import subprocess
 import time
 
 import pytest
@@ -286,6 +288,13 @@ class CountingFile:
     def __init__(self, fh):
         self.fh = fh
         self.read_bytes = 0
+        self.max_read = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.fh.close()
 
     def seek(self, *a):
         return self.fh.seek(*a)
@@ -296,6 +305,7 @@ class CountingFile:
     def read(self, n=-1):
         data = self.fh.read(n)
         self.read_bytes += len(data)
+        self.max_read = max(self.max_read, len(data))
         return data
 
 
@@ -363,6 +373,57 @@ def test_tail_decodes_multibyte_characters_split_across_blocks(tmp_path):
 
 
 
+def _logs_run(tmp_path, monkeypatch, data: bytes):
+    """A finished run whose stdout is `data`, with every open of that file
+    counted. cmd_logs opens the path itself, so the hook is on Path.open;
+    it is installed after the data is written because write_bytes opens too."""
+    monkeypatch.setattr(cli, "RUNS", tmp_path / "runs")
+    monkeypatch.setattr(cli, "require_env", lambda: None)
+    monkeypatch.setattr(cli, "read_state", lambda name: {"state": "EXITED"})
+    d = cli.RUNS / "r"
+    d.mkdir(parents=True)
+    (d / "stdout").write_bytes(data)
+    opened = []
+    real_open = pathlib.Path.open
+
+    def counting_open(self, *a, **k):
+        fh = real_open(self, *a, **k)
+        if self.name == "stdout":
+            fh = CountingFile(fh)
+            opened.append(fh)
+        return fh
+
+    monkeypatch.setattr(pathlib.Path, "open", counting_open)
+    return opened
+
+
+def test_logs_tail_reads_a_bounded_slice_of_the_file(tmp_path, monkeypatch, capsys):
+    """The same guard as above, but at the command level: the 0.1.3 defect was
+    `read_text().splitlines()[-n:]` in `cmd_logs` itself, and a slurp there
+    would bypass tail_text without the test above noticing."""
+    opened = _logs_run(tmp_path, monkeypatch,
+                       b"".join(b"line-%d\n" % i for i in range(400_000)))  # ~4 MB
+    rc = cli.cmd_logs(argparse.Namespace(name="r", tail=3, follow=False))
+    assert rc == cli.EX_OK
+    assert capsys.readouterr().out.splitlines()[-1] == "line-399999"
+    assert len(opened) == 1
+    assert opened[0].read_bytes <= 2 * cli.LOG_BLOCK, (
+        f"read {opened[0].read_bytes} bytes to print 3 lines")
+
+
+def test_logs_stream_never_holds_the_whole_log(tmp_path, monkeypatch, capsys):
+    """`logs` with no -n streams the file in blocks. Output is byte-identical
+    either way, so the only witness is the size of the largest single read."""
+    data = b"".join(b"line-%d\n" % i for i in range(100_000))  # ~1 MB
+    opened = _logs_run(tmp_path, monkeypatch, data)
+    rc = cli.cmd_logs(argparse.Namespace(name="r", tail=None, follow=False))
+    assert rc == cli.EX_OK
+    assert capsys.readouterr().out == data.decode()
+    assert len(opened) == 1
+    assert opened[0].max_read <= cli.LOG_BLOCK, (
+        f"one read of {opened[0].max_read} bytes: the log was held whole")
+
+
 def test_follow_drains_what_the_process_wrote_as_it_died(tmp_path, monkeypatch, capsys):
     """Regression (0.1.4, "fixed in passing"): when a followed process died,
     `logs -f` read the bytes written in its last moments and discarded them.
@@ -393,6 +454,48 @@ def test_follow_drains_what_the_process_wrote_as_it_died(tmp_path, monkeypatch, 
     out_text = capsys.readouterr().out
     assert out_text.startswith("first\nlast words\n"), out_text
     assert "end of log" in out_text
+
+
+
+# --- launch ------------------------------------------------------------------
+
+def test_a_run_that_dies_before_its_start_job_completes_is_a_failed_run(tmp_path, monkeypatch):
+    """With Type=exec, a main process that exits nonzero before systemd has
+    read the exec-fd fails the start job, so systemd-run exits nonzero for a
+    unit that did run. Under load that race is lost routinely (10 of 40
+    contended launches on the author's box). That is a run that FAILED, with
+    a record, not a launch that never happened. The stage: systemd-run
+    "fails" after the unit's ExecStopPost has already written its status."""
+    monkeypatch.setattr(cli, "RUNS", tmp_path / "runs")
+
+    def fake_sh(argv, *, timeout=30):
+        if argv[0] == "systemd-run":
+            (cli.run_dir("r") / "status").write_text("code=exited status=3 result=exit-code\n")
+            return subprocess.CompletedProcess(
+                argv, 1, "", "Job for proc-r.service failed.\n")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(cli, "sh", fake_sh)
+    args = argparse.Namespace(cmd=["/bin/sh", "-c", "exit 3"], cwd=str(tmp_path), env=[],
+                              gpu=None, gpu_wait=None, replace=False, stop_timeout=30)
+    assert cli.launch(args, "r") == cli.EX_FAILED
+    st = cli.read_state("r")
+    assert st["state"] == "FAILED" and st["exit"] == 3
+    assert (cli.RUNS / "r" / "meta.json").exists(), "the record was thrown away"
+
+
+def test_name_lock_excludes_a_second_launcher(tmp_path, monkeypatch):
+    """The lock that serializes two `proc run <same name>`. The integration
+    test races two real launches, which the scheduler can serialize by
+    accident; this pins the mechanism: while one launcher holds the name, a
+    second cannot take it, and it is free again afterwards."""
+    monkeypatch.setattr(cli, "RUNS", tmp_path / "runs")
+    with cli.name_lock("r"):
+        with (cli.RUNS / ".r.lock").open("w") as other:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with (cli.RUNS / ".r.lock").open("w") as other:
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released on exit
 
 
 # --- the `--` split ----------------------------------------------------------

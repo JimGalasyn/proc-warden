@@ -70,7 +70,10 @@ def proc(*args, home, timeout=90, extra_env=None):
     env = dict(os.environ, PROC_HOME=str(home))
     if extra_env:
         env.update(extra_env)
-    return subprocess.run([sys.executable, str(PROC), *args],
+    # umask 022, whatever the caller's: test_meta_json_is_not_world_readable
+    # must see the mode the code asks for, not one an ambient umask 077 would
+    # hand it for free.
+    return subprocess.run([sys.executable, str(PROC), *args], umask=0o022,
                           capture_output=True, text=True, timeout=timeout, env=env)
 
 

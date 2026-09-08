@@ -39,15 +39,26 @@ without a systemd user manager, which is right on a dev box and wrong in CI. Set
 Run them with
 
 ```bash
-mutgate run tests/mutations.py
+mutgate run --timeout 300 tests/mutations.py
 ```
 
 which applies each mutation in a throwaway copy of the checkout (the working
-tree is never touched) and runs the suite against it. The integration job in CI
-runs this and is gated on its exit code. `DECORATION` means a guard no longer
-fires; `NOT_APPLIED` means a refactor moved the site and the `old` text needs
-re-anchoring; `OVERREACH` means a test outside the contract fired, which is a
-finding about the code, not noise to suppress with `may_fire`.
+tree is never touched) and runs the suite against it. **This needs a systemd
+user manager too**: most contracts fire tests in `test_proc.py`, a skip is
+invisible to mutgate, and on a box without one every such contract reads
+`DECORATION`. Without systemd, check a contract whose test is in
+`test_unit.py` on its own:
+
+```bash
+mutgate run tests/mutations.py --only tail-reads-whole-file --tests tests/test_unit.py
+```
+
+The `mutations` job in CI runs the full file and is gated on its exit code.
+`DECORATION` means a guard no longer fires; `NOT_APPLIED` means a refactor
+moved the site and the `old` text needs re-anchoring; `OVERREACH` means a test
+outside the contract fired, which is a finding about the code before it is a
+`may_fire` entry. Anchor on code, not on the comment beside it, so a reword is
+not a moved site.
 
 ### If collection dies before any test runs
 
