@@ -305,6 +305,24 @@ def cmd_run(args: argparse.Namespace) -> int:
         return launch(args, name)
 
 
+def finished_anyway(status_path: Path) -> bool:
+    """Did the unit run to completion even though systemd-run reported failure?
+
+    With Type=exec the start job succeeds when the manager sees the exec-fd
+    close; if the main process dies nonzero before that is read -- a crash in
+    the first milliseconds, which under load loses the race routinely -- the
+    job fails instead and systemd-run exits nonzero. Reading that as "launch
+    failed" threw away the run directory, and with it the only record of a
+    crash the tool exists to catch. The ExecStopPost status file is the tell:
+    only a unit that started and stopped writes one. Give it a moment to land.
+    """
+    for _ in range(8):
+        if status_path.exists():
+            return True
+        time.sleep(0.125)
+    return False
+
+
 def launch(args: argparse.Namespace, name: str) -> int:
     existing = read_state(name)
     if existing and existing["state"] == "RUNNING":
@@ -416,7 +434,7 @@ def launch(args: argparse.Namespace, name: str) -> int:
     launch_argv += ["--"] + exec_argv
 
     r = sh(launch_argv, timeout=60)
-    if r.returncode != 0:
+    if r.returncode != 0 and not finished_anyway(status_path):
         shutil.rmtree(d, ignore_errors=True)
         if stale is not None:
             stale.rename(d)  # the old run is still the only record; keep it

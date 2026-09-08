@@ -75,6 +75,37 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  # The contracts half: each recorded defect, restored, must turn its
+  # regression test red (tests/mutations.py). Its own job so it overlaps
+  # `integration` instead of multiplying it, and so a failed contract reads as
+  # what it is. Same systemd bring-up: most contracts fire integration tests.
+  mutations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Bring up a systemd user manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      - name: Mutation contracts
+        env:
+          # A skipped integration suite would read every contract as DECORATION.
+          PROC_REQUIRE_SYSTEMD: "1"
+        # Gated on mutgate's exit code, not on its printed table. --timeout bounds
+        # one pytest run: a mutation that makes a loop spin is an ERROR verdict,
+        # not a runner held for six hours.
+        run: mutgate run --timeout 300 tests/mutations.py
+
   # The packaging half: the sdist and wheel must build and pass twine's metadata
   # check on every change, so a release is never the first time we find out.
   build:

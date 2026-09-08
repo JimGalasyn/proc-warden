@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- **A run that crashes in its first milliseconds no longer loses its record.**
+  With `Type=exec`, a main process that exits nonzero before systemd has read
+  the exec-fd fails the *start job*, so `systemd-run` exits nonzero for a unit
+  that did run. Under load that race is lost routinely (10 of 40 contended
+  launches on the author's box). `proc run` read it as "systemd-run failed",
+  deleted the run directory, and so threw away the logs and exit status of
+  exactly the crash it exists to catch. It now checks for the unit's status
+  file before concluding the launch failed, and reports the run as `FAILED`
+  with its record intact. Found by review of the mutation contracts below,
+  whose fast-exit tests were flaky for this reason.
+- **Mutation contracts.** `tests/mutations.py` restores each behavioural
+  defect recorded in this changelog and requires its regression test to go
+  red — and only that test. `mutgate run tests/mutations.py` checks them; CI
+  runs it in its own `mutations` job. Writing them found guards missing: the
+  0.1.4 "fixed in passing" `logs -f` drain had none (the window is one
+  `systemctl` call wide, which no integration test can hit on purpose), and
+  the 0.1.4 streaming `logs` had none (its output is byte-identical either
+  way). Both now have unit tests that stage the interleaving or count the
+  reads, as does the name lock, whose integration test can pass by scheduler
+  accident.
+
 ## 0.1.4 — 2026-07-27
 
 The three findings left over from the original review, each with a regression

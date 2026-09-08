@@ -40,6 +40,7 @@ dependencies = []
 test = [
   "pytest>=8",
   "pytest-cov>=4",
+  "mutgate>=0.1.1",  # tests/mutations.py: each recorded defect must still fire its test
 ]
 
 [project.urls]
