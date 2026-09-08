@@ -74,6 +74,12 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
           fail_ci_if_error: false
+      # Each recorded defect, restored, must turn its regression test red. Gated
+      # on mutgate's exit code, not on its printed table.
+      - name: Mutation contracts
+        env:
+          PROC_REQUIRE_SYSTEMD: "1"
+        run: mutgate run tests/mutations.py
 
   # The packaging half: the sdist and wheel must build and pass twine's metadata
   # check on every change, so a release is never the first time we find out.

@@ -10,6 +10,7 @@ environment assembly, argv resolution, and the `--` split.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -359,6 +360,39 @@ def test_tail_decodes_multibyte_characters_split_across_blocks(tmp_path):
     p = _write(tmp_path, b"\n".join([b"p" * 100_000, line]) + b"\n")
     with p.open("rb") as fh:
         assert cli.tail_text(fh, 1) == line.decode()
+
+
+
+def test_follow_drains_what_the_process_wrote_as_it_died(tmp_path, monkeypatch, capsys):
+    """Regression (0.1.4, "fixed in passing"): when a followed process died,
+    `logs -f` read the bytes written in its last moments and discarded them.
+    The window is the width of one systemctl call, so no integration test can
+    hit it reliably; here the state check itself does the final write, which
+    is exactly the interleaving the drain exists for."""
+    monkeypatch.setattr(cli, "RUNS", tmp_path / "runs")
+    monkeypatch.setattr(cli, "require_env", lambda: None)
+    d = cli.RUNS / "r"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text("{}")
+    out = d / "stdout"
+    out.write_text("first\n")
+
+    calls = []
+
+    def read_state(name):
+        calls.append(name)
+        if len(calls) == 1:
+            return {"state": "RUNNING"}  # the existence check at the top
+        with out.open("a") as fh:
+            fh.write("last words\n")  # written between the empty read and the state check
+        return {"state": "EXITED"}
+
+    monkeypatch.setattr(cli, "read_state", read_state)
+    rc = cli.cmd_logs(argparse.Namespace(name="r", tail=None, follow=True))
+    assert rc == cli.EX_OK
+    out_text = capsys.readouterr().out
+    assert out_text.startswith("first\nlast words\n"), out_text
+    assert "end of log" in out_text
 
 
 # --- the `--` split ----------------------------------------------------------

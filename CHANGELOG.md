@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Mutation contracts.** `tests/mutations.py` restores each defect recorded in
+  this changelog and requires its regression test to go red — and only that
+  test. `mutgate run tests/mutations.py` checks them; CI runs it in the
+  integration job. Writing the first eight found that the 0.1.4 "fixed in
+  passing" `logs -f` drain had no guard at all, so it now has a unit test that
+  stages the exact interleaving (the window is one `systemctl` call wide, which
+  no integration test can hit on purpose).
+
 ## 0.1.4 — 2026-07-27
 
 The three findings left over from the original review, each with a regression

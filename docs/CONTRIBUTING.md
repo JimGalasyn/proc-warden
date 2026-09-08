@@ -8,6 +8,7 @@
 | `proc` | a shim so a checkout runs without installing (`realpath`, so a symlink into it still works) |
 | `tests/test_unit.py` | pure logic; no systemd; runs anywhere |
 | `tests/test_proc.py` | drives a real systemd user manager |
+| `tests/mutations.py` | each recorded defect, restored, and the test that must catch it |
 | `docs/DESIGN.md` | the six invariants and why each exists — **read this first** |
 
 ## Running the tests
@@ -33,6 +34,21 @@ COVERAGE_PROCESS_START=$PWD/pyproject.toml pytest -q --cov=proc_warden --cov-rep
 without a systemd user manager, which is right on a dev box and wrong in CI. Set
 `PROC_REQUIRE_SYSTEMD=1` to turn that skip into a hard error; CI does.
 
+**Mutation contracts.** `tests/mutations.py` restores each defect recorded in
+`CHANGELOG.md` and requires its regression test to go red, and only that test.
+Run them with
+
+```bash
+mutgate run tests/mutations.py
+```
+
+which applies each mutation in a throwaway copy of the checkout (the working
+tree is never touched) and runs the suite against it. The integration job in CI
+runs this and is gated on its exit code. `DECORATION` means a guard no longer
+fires; `NOT_APPLIED` means a refactor moved the site and the `old` text needs
+re-anchoring; `OVERREACH` means a test outside the contract fired, which is a
+finding about the code, not noise to suppress with `may_fire`.
+
 ### If collection dies before any test runs
 
 A globally installed pytest plugin can crash collection with a traceback that
@@ -53,6 +69,8 @@ the name is how that stays legible.
 
 For a bug fix, check that the new test **fails against the unfixed code** before
 you fix it. A regression test that passes either way documents nothing.
+Then keep that check alive: add a `Mutation` to `tests/mutations.py` whose
+`new` is the bug as it shipped and whose `fires` is the new test.
 
 ## Things deliberately not done
 
