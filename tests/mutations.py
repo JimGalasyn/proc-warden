@@ -119,7 +119,7 @@ MUTATIONS = [
              note="logs -f discarded what the process wrote in its last moments. The "
                   "window is one systemctl call wide: the unit test stages it, and the "
                   "two integration follow tests hit it by chance a few percent of the time."),
-    # --- unreleased --------------------------------------------------------
+    # --- 0.1.5 -------------------------------------------------------------
     Mutation("fast-death-reads-as-a-failed-launch", CLI,
              old="    if r.returncode != 0 and not finished_anyway(status_path):",
              new="    if r.returncode != 0:",
@@ -136,6 +136,7 @@ MUTATIONS = [
              note="the guard of the guard: if finished_anyway cannot say no, a launch "
                   "systemd refused reads as a finished run and the previous record is "
                   "discarded for a directory with nothing in it"),
+    # --- 0.1.6 -------------------------------------------------------------
     Mutation("exit-mid-read-reads-as-lost", CLI,
              old="    status = parse_status_file(status_path)\n"
                  "    if status:\n"

@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.6 — 2026-09-26
+
+One behavioural fix, reported from a campaign loop. No interface change: same
+commands, same exit codes, same state names.
 
 - **`proc wait` no longer reports a clean exit as a failure when the run ends
   while it is watching.** `read_state` read the status file first and asked
