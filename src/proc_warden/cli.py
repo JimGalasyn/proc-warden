@@ -152,37 +152,48 @@ def read_state(name: str) -> dict | None:
 
     status_path = d / "status"
     status = parse_status_file(status_path)
-
     if status:
-        st["finished_at"] = status_path.stat().st_mtime
-        st["result"] = status.get("result")
-        code, value = status.get("code"), status.get("status", "")
-        if code == "exited":
-            st["exit"] = int(value) if value.lstrip("-").isdigit() else None
-            if status.get("result") == "oom-kill":
-                st["state"] = "OOM"
-            elif st["exit"] == 0:
-                st["state"] = "EXITED"
-            elif st["exit"] == LEASE_BUSY_CODE and st["gpu"] is not None:
-                st["state"] = "LEASE_BUSY"
-            else:
-                st["state"] = "FAILED"
-        elif code in ("killed", "dumped"):
-            st["signal"] = value
-            st["state"] = "OOM" if status.get("result") == "oom-kill" else "KILLED"
-        else:
-            st["state"] = "FAILED"
-        return st
+        return apply_status(st, status, status_path)
 
     props = unit_props(name)
     if props.get("ActiveState") in RUNNING_STATES:
         st["state"] = "RUNNING"
         pid = props.get("MainPID", "0")
         st["pid"] = int(pid) if pid.isdigit() and pid != "0" else None
+        return st
+    # ExecStopPost writes the status file before the unit goes inactive, so a
+    # unit that finished between the read above and the systemctl call reads
+    # as gone with no status. Look again before calling it lost: a clean exit
+    # watched by `proc wait` landed in exactly that window and returned 1.
+    status = parse_status_file(status_path)
+    if status:
+        return apply_status(st, status, status_path)
+    # No status file and no live unit: the unit vanished without running
+    # ExecStopPost -- e.g. `wsl --shutdown` took the user manager with it.
+    st["state"] = "LOST"
+    return st
+
+
+def apply_status(st: dict, status: dict[str, str], status_path: Path) -> dict:
+    """Fill in a dead run's state from its ExecStopPost status line."""
+    st["finished_at"] = status_path.stat().st_mtime
+    st["result"] = status.get("result")
+    code, value = status.get("code"), status.get("status", "")
+    if code == "exited":
+        st["exit"] = int(value) if value.lstrip("-").isdigit() else None
+        if status.get("result") == "oom-kill":
+            st["state"] = "OOM"
+        elif st["exit"] == 0:
+            st["state"] = "EXITED"
+        elif st["exit"] == LEASE_BUSY_CODE and st["gpu"] is not None:
+            st["state"] = "LEASE_BUSY"
+        else:
+            st["state"] = "FAILED"
+    elif code in ("killed", "dumped"):
+        st["signal"] = value
+        st["state"] = "OOM" if status.get("result") == "oom-kill" else "KILLED"
     else:
-        # No status file and no live unit: the unit vanished without running
-        # ExecStopPost -- e.g. `wsl --shutdown` took the user manager with it.
-        st["state"] = "LOST"
+        st["state"] = "FAILED"
     return st
 
 

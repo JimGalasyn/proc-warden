@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **`proc wait` no longer reports a clean exit as a failure when the run ends
+  while it is watching.** `read_state` read the status file first and asked
+  systemd second. A unit that exited between those two reads had written its
+  status file and been collected by the time systemd was asked, so the run
+  read as `LOST`, and `proc wait` returned 1 for a run whose record said
+  `EXITED 0`. A run that finished before `wait` reached it was unaffected,
+  which is why this showed up only on the one run in a campaign loop that
+  ended during its wait. If the unit is gone, the status file is now read a
+  second time before the run is called lost. `proc status` and `proc ls` read
+  state the same way and had the same window.
+
 ## 0.1.5 — 2026-09-08
 
 One behavioural fix, found while putting the test suite itself under test. No

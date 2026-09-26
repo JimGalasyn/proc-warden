@@ -136,4 +136,16 @@ MUTATIONS = [
              note="the guard of the guard: if finished_anyway cannot say no, a launch "
                   "systemd refused reads as a finished run and the previous record is "
                   "discarded for a directory with nothing in it"),
+    Mutation("exit-mid-read-reads-as-lost", CLI,
+             old="    status = parse_status_file(status_path)\n"
+                 "    if status:\n"
+                 "        return apply_status(st, status, status_path)\n"
+                 "    # No status file and no live unit",
+             new="    # No status file and no live unit",
+             fires=("test_a_run_that_finishes_mid_read_is_not_lost",
+                    "test_wait_on_a_run_that_finishes_mid_poll_reports_success"),
+             note="reported from a campaign loop: `proc wait` returned 1 for a run whose "
+                  "record said EXITED 0. read_state read the status file before asking "
+                  "systemd, so a unit that exited in between read as LOST. The window is "
+                  "one systemctl call wide; only the staged unit tests can see it."),
 ]

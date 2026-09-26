@@ -171,6 +171,53 @@ def test_a_corrupt_meta_file_does_not_crash_status(tmp_path, monkeypatch):
     assert st["state"] == "EXITED" and st["cmd"] == []
 
 
+def _finishing_run(tmp_path, monkeypatch, *, status: str | None, polls_alive: int = 0):
+    """A run with no status file yet, whose unit finishes during a systemctl
+    call: ExecStopPost writes `status` (if any), then the collected unit is gone.
+    The first `polls_alive` calls still see it running."""
+    monkeypatch.setattr(cli, "RUNS", tmp_path / "runs")
+    d = cli.RUNS / "r"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(
+        {"cmd": ["/bin/true"], "cwd": "/tmp", "started_at": time.time()}))
+
+    calls = []
+
+    def unit_props(name):
+        calls.append(name)
+        if len(calls) <= polls_alive:
+            return {"ActiveState": "active", "MainPID": "4242", "LoadState": "loaded"}
+        if status is not None:
+            (d / "status").write_text(status)
+        return {"ActiveState": "inactive", "LoadState": "not-found"}
+
+    monkeypatch.setattr(cli, "unit_props", unit_props)
+
+
+def test_a_run_that_finishes_mid_read_is_not_lost(tmp_path, monkeypatch):
+    """The status file is read before systemd is asked, so a unit that exits
+    between the two reads as gone with no record. Reported from a campaign loop:
+    `proc wait` returned 1 for a run whose record said EXITED 0."""
+    _finishing_run(tmp_path, monkeypatch, status="code=exited status=0 result=success")
+    st = cli.read_state("r")
+    assert st["state"] == "EXITED" and st["exit"] == 0
+
+
+def test_wait_on_a_run_that_finishes_mid_poll_reports_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "require_env", lambda: None)
+    monkeypatch.setattr(cli, "POLL", 0)
+    # One live poll for the existence check, one in the loop, then the exit.
+    _finishing_run(tmp_path, monkeypatch, status="code=exited status=0 result=success",
+                   polls_alive=2)
+    rc = cli.cmd_wait(argparse.Namespace(name="r", ready=None, timeout=5))
+    assert rc == cli.EX_OK
+
+
+def test_a_unit_gone_without_a_status_file_is_still_lost(tmp_path, monkeypatch):
+    _finishing_run(tmp_path, monkeypatch, status=None)
+    assert cli.read_state("r")["state"] == "LOST"
+
+
 # --- formatting --------------------------------------------------------------
 
 @pytest.mark.parametrize("seconds,expected", [
