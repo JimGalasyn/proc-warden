@@ -30,8 +30,8 @@ keywords:
   - wsl2
   - reproducibility
 license: MIT
-version: 0.1.5
-date-released: "2026-09-08"
+version: 0.1.6
+date-released: "2026-09-26"
 doi: 10.5281/zenodo.21611649
 identifiers:
   - type: doi
