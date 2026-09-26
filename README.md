@@ -157,7 +157,7 @@ leases/gpu<N>.lock       # the lease; held by an fd, released by the kernel
 
 ## Tests
 
-117 tests in two halves, and twelve mutation contracts over them.
+120 tests in two halves, and thirteen mutation contracts over them.
 
 `tests/test_proc.py` drives the **real** systemd user manager — no mocks, because
 the entire claim is that the kernel and systemd hold state we used to guess at.
