@@ -4,6 +4,7 @@
 
 One behavioural fix, reported from a campaign loop. No interface change: same
 commands, same exit codes, same state names.
+Cited by [10.5281/zenodo.22982102](https://doi.org/10.5281/zenodo.22982102).
 
 - **`proc wait` no longer reports a clean exit as a failure when the run ends
   while it is watching.** `read_state` read the status file first and asked
