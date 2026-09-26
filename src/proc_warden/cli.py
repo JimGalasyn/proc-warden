@@ -165,6 +165,9 @@ def read_state(name: str) -> dict | None:
     # unit that finished between the read above and the systemctl call reads
     # as gone with no status. Look again before calling it lost: a clean exit
     # watched by `proc wait` landed in exactly that window and returned 1.
+    # Asking systemd first would close the window too, but costs a systemctl
+    # call for every dead run `proc ls` prints; disk-first plus this re-read
+    # keeps the dead free.
     status = parse_status_file(status_path)
     if status:
         return apply_status(st, status, status_path)
